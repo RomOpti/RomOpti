@@ -252,250 +252,496 @@ $Tweaks = @(
 #endregion
 )
 
-# ---- 5. XAML ---------------------------------------------------------------
+# ---- 5. XAML (product-grade UI) -------------------------------------------
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Rom Opti" Height="824" Width="900"
-        WindowStartupLocation="CenterScreen" MinWidth="820" MinHeight="700"
-        FontFamily="Segoe UI">
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="Rom Opti" Height="840" Width="940" MinWidth="860" MinHeight="720"
+        WindowStyle="None" ResizeMode="CanResize" AllowsTransparency="False"
+        WindowStartupLocation="CenterScreen"
+        FontFamily="Segoe UI Variable Text, Segoe UI" TextOptions.TextFormattingMode="Ideal"
+        TextOptions.TextRenderingMode="ClearType" UseLayoutRounding="True" SnapsToDevicePixels="True">
+
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="42" ResizeBorderThickness="6" CornerRadius="0"
+                        GlassFrameThickness="1" UseAeroCaptionButtons="False"/>
+  </shell:WindowChrome.WindowChrome>
+
   <Window.Background>
-    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
-      <GradientStop Color="#080C14" Offset="0"/>
-      <GradientStop Color="#0C1422" Offset="0.55"/>
-      <GradientStop Color="#0A1118" Offset="1"/>
+    <LinearGradientBrush StartPoint="0,0" EndPoint="0.4,1">
+      <GradientStop Color="#05060A" Offset="0"/>
+      <GradientStop Color="#0A0C12" Offset="0.5"/>
+      <GradientStop Color="#070810" Offset="1"/>
     </LinearGradientBrush>
   </Window.Background>
 
   <Window.Resources>
-    <SolidColorBrush x:Key="Accent" Color="#2DD4FF"/>
-    <SolidColorBrush x:Key="Gold"   Color="#FFC861"/>
-    <SolidColorBrush x:Key="Text"   Color="#D6DEE7"/>
-    <SolidColorBrush x:Key="Sub"    Color="#8A97A6"/>
+    <!-- palette -->
+    <Color x:Key="cAccent">#54C7E0</Color>
+    <Color x:Key="cAccentHi">#7FE0F2</Color>
+    <SolidColorBrush x:Key="Accent"   Color="#54C7E0"/>
+    <SolidColorBrush x:Key="AccentHi" Color="#7FE0F2"/>
+    <SolidColorBrush x:Key="Gold"     Color="#E6B45C"/>
+    <SolidColorBrush x:Key="TextHi"   Color="#ECEEF2"/>
+    <SolidColorBrush x:Key="Text"     Color="#C2C7CF"/>
+    <SolidColorBrush x:Key="TextMut"  Color="#7A818B"/>
+    <SolidColorBrush x:Key="Hair"     Color="#1C1F27"/>
 
-    <Style TargetType="CheckBox">
-      <Setter Property="Foreground" Value="#C7ECF6"/>
-      <Setter Property="FontSize" Value="13"/>
-      <Setter Property="VerticalContentAlignment" Value="Center"/>
-      <Setter Property="Margin" Value="0,0,2,0"/>
+    <!-- ===== minimal scrollbar ===== -->
+    <Style x:Key="SbPage" TargetType="RepeatButton">
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="Template">
+        <Setter.Value><ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate></Setter.Value>
+      </Setter>
     </Style>
-
-    <Style x:Key="Nav" TargetType="Button">
-      <Setter Property="Height" Value="42"/>
-      <Setter Property="Foreground" Value="#8A97A6"/>
-      <Setter Property="Background" Value="Transparent"/>
-      <Setter Property="HorizontalContentAlignment" Value="Left"/>
-      <Setter Property="FontSize" Value="13.5"/>
-      <Setter Property="FontWeight" Value="SemiBold"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Margin" Value="10,2,10,2"/>
+    <Style x:Key="SbThumb" TargetType="Thumb">
       <Setter Property="Template">
         <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border Name="b" Background="{TemplateBinding Background}" CornerRadius="8" Padding="14,0">
-              <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Left"/>
-            </Border>
+          <ControlTemplate TargetType="Thumb">
+            <Border x:Name="t" CornerRadius="3" Background="#2B303B" Margin="2,1"/>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="b" Property="Background" Value="#14222F"/>
-              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="t" Property="Background" Value="#3C4350"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
     </Style>
+    <Style TargetType="ScrollBar">
+      <Setter Property="Width" Value="10"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ScrollBar">
+            <Grid Background="Transparent">
+              <Track x:Name="PART_Track" IsDirectionReversed="True">
+                <Track.Thumb><Thumb Style="{StaticResource SbThumb}"/></Track.Thumb>
+                <Track.IncreaseRepeatButton><RepeatButton Style="{StaticResource SbPage}" Command="ScrollBar.PageDownCommand"/></Track.IncreaseRepeatButton>
+                <Track.DecreaseRepeatButton><RepeatButton Style="{StaticResource SbPage}" Command="ScrollBar.PageUpCommand"/></Track.DecreaseRepeatButton>
+              </Track>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
 
-    <Style TargetType="Button">
-      <Setter Property="Foreground" Value="#D6DEE7"/>
-      <Setter Property="Background" Value="#1A2B3A"/>
+    <!-- ===== standard button (animated) ===== -->
+    <Style x:Key="Btn" TargetType="Button">
+      <Setter Property="Foreground" Value="{StaticResource TextHi}"/>
       <Setter Property="FontSize" Value="12.5"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
-      <Setter Property="Padding" Value="15,9"/>
+      <Setter Property="Padding" Value="16,9"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border Name="b" Background="{TemplateBinding Background}" CornerRadius="7"
-                    Padding="{TemplateBinding Padding}">
+            <Border x:Name="bd" CornerRadius="8" Padding="{TemplateBinding Padding}"
+                    BorderThickness="1" RenderTransformOrigin="0.5,0.5">
+              <Border.Background><SolidColorBrush x:Name="bg" Color="#171A21"/></Border.Background>
+              <Border.BorderBrush><SolidColorBrush x:Name="br" Color="#23272F"/></Border.BorderBrush>
+              <Border.RenderTransform>
+                <TransformGroup>
+                  <ScaleTransform x:Name="sc" ScaleX="1" ScaleY="1"/>
+                  <TranslateTransform x:Name="tt" Y="0"/>
+                </TransformGroup>
+              </Border.RenderTransform>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="b" Property="Background" Value="#27425A"/>
+              <EventTrigger RoutedEvent="MouseEnter">
+                <BeginStoryboard><Storyboard>
+                  <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#222732" Duration="0:0:0.14"/>
+                  <ColorAnimation Storyboard.TargetName="br" Storyboard.TargetProperty="Color" To="#3A4250" Duration="0:0:0.14"/>
+                  <DoubleAnimation Storyboard.TargetName="tt" Storyboard.TargetProperty="Y" To="-1.5" Duration="0:0:0.14"/>
+                </Storyboard></BeginStoryboard>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="MouseLeave">
+                <BeginStoryboard><Storyboard>
+                  <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#171A21" Duration="0:0:0.18"/>
+                  <ColorAnimation Storyboard.TargetName="br" Storyboard.TargetProperty="Color" To="#23272F" Duration="0:0:0.18"/>
+                  <DoubleAnimation Storyboard.TargetName="tt" Storyboard.TargetProperty="Y" To="0" Duration="0:0:0.18"/>
+                </Storyboard></BeginStoryboard>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="PreviewMouseLeftButtonDown">
+                <BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" To="0.96" Duration="0:0:0.07"/>
+                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" To="0.96" Duration="0:0:0.07"/>
+                </Storyboard></BeginStoryboard>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="PreviewMouseLeftButtonUp">
+                <BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.12"/>
+                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.12"/>
+                </Storyboard></BeginStoryboard>
+              </EventTrigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ===== primary button (accent + glow) ===== -->
+    <Style x:Key="Primary" TargetType="Button">
+      <Setter Property="Foreground" Value="#04141A"/>
+      <Setter Property="FontSize" Value="12.5"/>
+      <Setter Property="FontWeight" Value="Bold"/>
+      <Setter Property="Padding" Value="18,9"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="bd" CornerRadius="8" Padding="{TemplateBinding Padding}" RenderTransformOrigin="0.5,0.5">
+              <Border.Background><SolidColorBrush x:Name="bg" Color="#54C7E0"/></Border.Background>
+              <Border.Effect><DropShadowEffect x:Name="gl" Color="#54C7E0" BlurRadius="0" ShadowDepth="0" Opacity="0"/></Border.Effect>
+              <Border.RenderTransform>
+                <TransformGroup><ScaleTransform x:Name="sc" ScaleX="1" ScaleY="1"/><TranslateTransform x:Name="tt" Y="0"/></TransformGroup>
+              </Border.RenderTransform>
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <EventTrigger RoutedEvent="MouseEnter">
+                <BeginStoryboard><Storyboard>
+                  <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#7FE0F2" Duration="0:0:0.14"/>
+                  <DoubleAnimation Storyboard.TargetName="gl" Storyboard.TargetProperty="BlurRadius" To="20" Duration="0:0:0.18"/>
+                  <DoubleAnimation Storyboard.TargetName="gl" Storyboard.TargetProperty="Opacity" To="0.55" Duration="0:0:0.18"/>
+                  <DoubleAnimation Storyboard.TargetName="tt" Storyboard.TargetProperty="Y" To="-1.5" Duration="0:0:0.14"/>
+                </Storyboard></BeginStoryboard>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="MouseLeave">
+                <BeginStoryboard><Storyboard>
+                  <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#54C7E0" Duration="0:0:0.18"/>
+                  <DoubleAnimation Storyboard.TargetName="gl" Storyboard.TargetProperty="BlurRadius" To="0" Duration="0:0:0.2"/>
+                  <DoubleAnimation Storyboard.TargetName="gl" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.2"/>
+                  <DoubleAnimation Storyboard.TargetName="tt" Storyboard.TargetProperty="Y" To="0" Duration="0:0:0.18"/>
+                </Storyboard></BeginStoryboard>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="PreviewMouseLeftButtonDown">
+                <BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" To="0.96" Duration="0:0:0.07"/>
+                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" To="0.96" Duration="0:0:0.07"/>
+                </Storyboard></BeginStoryboard>
+              </EventTrigger>
+              <EventTrigger RoutedEvent="PreviewMouseLeftButtonUp">
+                <BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.12"/>
+                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.12"/>
+                </Storyboard></BeginStoryboard>
+              </EventTrigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ===== window caption buttons ===== -->
+    <Style x:Key="Cap" TargetType="Button">
+      <Setter Property="Width" Value="44"/><Setter Property="Height" Value="42"/>
+      <Setter Property="Foreground" Value="#9097A1"/>
+      <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/><Setter Property="FontSize" Value="10"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b"><Border.Background><SolidColorBrush x:Name="bg" Color="#00000000"/></Border.Background>
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+            <ControlTemplate.Triggers>
+              <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard>
+                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#1E222B" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></EventTrigger>
+              <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard>
+                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.16"/></Storyboard></BeginStoryboard></EventTrigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="CapClose" TargetType="Button" BasedOn="{StaticResource Cap}">
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b"><Border.Background><SolidColorBrush x:Name="bg" Color="#00000000"/></Border.Background>
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+            <ControlTemplate.Triggers>
+              <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard>
+                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#E13D3D" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></EventTrigger>
+              <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard>
+                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.16"/></Storyboard></BeginStoryboard></EventTrigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- ===== nav item (RadioButton) ===== -->
+    <Style x:Key="Nav" TargetType="RadioButton">
+      <Setter Property="Height" Value="44"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMut}"/>
+      <Setter Property="FontSize" Value="13.5"/><Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Margin" Value="12,2,12,2"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RadioButton">
+            <Border x:Name="bd" CornerRadius="9" Padding="16,0">
+              <Border.Background><SolidColorBrush x:Name="bg" Color="#00000000"/></Border.Background>
+              <Grid>
+                <Border x:Name="stripe" Width="3" Height="18" CornerRadius="2" HorizontalAlignment="Left"
+                        Background="{StaticResource Accent}" Opacity="0" RenderTransformOrigin="0.5,0.5">
+                  <Border.RenderTransform><ScaleTransform x:Name="ss" ScaleY="0.3"/></Border.RenderTransform>
+                </Border>
+                <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Left" Margin="14,0,0,0"/>
+              </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+              <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard>
+                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#15181F" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></EventTrigger>
+              <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard x:Name="lv">
+                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.16"/></Storyboard></BeginStoryboard></EventTrigger>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="bd" Property="Background"><Setter.Value><SolidColorBrush Color="#16202A"/></Setter.Value></Setter>
+                <Setter Property="Foreground" Value="{StaticResource TextHi}"/>
+                <Trigger.EnterActions>
+                  <BeginStoryboard><Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="stripe" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.2"/>
+                    <DoubleAnimation Storyboard.TargetName="ss" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.26">
+                      <DoubleAnimation.EasingFunction><BackEase Amplitude="0.6" EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
+                    </DoubleAnimation>
+                  </Storyboard></BeginStoryboard>
+                </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                  <BeginStoryboard><Storyboard>
+                    <DoubleAnimation Storyboard.TargetName="stripe" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.14"/>
+                    <DoubleAnimation Storyboard.TargetName="ss" Storyboard.TargetProperty="ScaleY" To="0.3" Duration="0:0:0.14"/>
+                  </Storyboard></BeginStoryboard>
+                </Trigger.ExitActions>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
     </Style>
-    <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-      <Setter Property="Background" Value="#0E8FA8"/>
-      <Setter Property="Foreground" Value="White"/>
+
+    <!-- ===== modern checkbox ===== -->
+    <Style TargetType="CheckBox">
+      <Setter Property="Foreground" Value="{StaticResource Text}"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <StackPanel Orientation="Horizontal" Background="Transparent">
+              <Border x:Name="box" Width="19" Height="19" CornerRadius="5" BorderThickness="1.6" VerticalAlignment="Center"
+                      RenderTransformOrigin="0.5,0.5">
+                <Border.Background><SolidColorBrush x:Name="bg" Color="#00000000"/></Border.Background>
+                <Border.BorderBrush><SolidColorBrush x:Name="br" Color="#3A4150"/></Border.BorderBrush>
+                <Border.RenderTransform><ScaleTransform x:Name="sc" ScaleX="1" ScaleY="1"/></Border.RenderTransform>
+                <Path x:Name="chk" Stretch="Uniform" Margin="3.5" Opacity="0"
+                      Stroke="#04141A" StrokeThickness="2.4" StrokeEndLineCap="Round" StrokeStartLineCap="Round"
+                      Data="M 2,9 L 7,14 L 16,3"/>
+              </Border>
+              <ContentPresenter x:Name="lbl" VerticalAlignment="Center" Margin="11,0,0,0" RecognizesAccessKey="True"/>
+            </StackPanel>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="br" Property="Color" Value="#54C7E0"/>
+                <Setter TargetName="lbl" Property="TextElement.Foreground" Value="{StaticResource TextHi}"/>
+              </Trigger>
+              <Trigger Property="IsChecked" Value="True">
+                <Trigger.EnterActions>
+                  <BeginStoryboard><Storyboard>
+                    <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#54C7E0" Duration="0:0:0.16"/>
+                    <ColorAnimation Storyboard.TargetName="br" Storyboard.TargetProperty="Color" To="#54C7E0" Duration="0:0:0.16"/>
+                    <DoubleAnimation Storyboard.TargetName="chk" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.14"/>
+                    <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" From="0.7" To="1" Duration="0:0:0.22">
+                      <DoubleAnimation.EasingFunction><BackEase Amplitude="0.7" EasingMode="EaseOut"/></DoubleAnimation.EasingFunction></DoubleAnimation>
+                    <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" From="0.7" To="1" Duration="0:0:0.22">
+                      <DoubleAnimation.EasingFunction><BackEase Amplitude="0.7" EasingMode="EaseOut"/></DoubleAnimation.EasingFunction></DoubleAnimation>
+                  </Storyboard></BeginStoryboard>
+                </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                  <BeginStoryboard><Storyboard>
+                    <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.14"/>
+                    <ColorAnimation Storyboard.TargetName="br" Storyboard.TargetProperty="Color" To="#3A4150" Duration="0:0:0.14"/>
+                    <DoubleAnimation Storyboard.TargetName="chk" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.1"/>
+                  </Storyboard></BeginStoryboard>
+                </Trigger.ExitActions>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
 
-    <Style TargetType="ToolTip">
-      <Setter Property="Background" Value="#070C14"/>
-      <Setter Property="Foreground" Value="#D6DEE7"/>
-      <Setter Property="BorderBrush" Value="#2DD4FF"/>
+    <!-- ===== help badge (?) ===== -->
+    <Style x:Key="Help" TargetType="Border">
+      <Setter Property="Width" Value="17"/><Setter Property="Height" Value="17"/>
+      <Setter Property="CornerRadius" Value="9"/><Setter Property="Margin" Value="9,0,0,0"/>
+      <Setter Property="VerticalAlignment" Value="Center"/><Setter Property="Cursor" Value="Help"/>
+      <Setter Property="Background"><Setter.Value><SolidColorBrush Color="#1B1F27"/></Setter.Value></Setter>
       <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="11"/>
-      <Setter Property="MaxWidth" Value="360"/>
+      <Setter Property="BorderBrush"><Setter.Value><SolidColorBrush Color="#2C323D"/></Setter.Value></Setter>
+    </Style>
+
+    <!-- tooltip -->
+    <Style TargetType="ToolTip">
+      <Setter Property="Background" Value="#05070B"/>
+      <Setter Property="Foreground" Value="#D7DCE3"/>
+      <Setter Property="BorderBrush" Value="#54C7E0"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="12,10"/>
+      <Setter Property="MaxWidth" Value="370"/>
+      <Setter Property="FontSize" Value="12.5"/>
       <Setter Property="HasDropShadow" Value="True"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ToolTip">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}">
+              <Border.Effect><DropShadowEffect Color="#000000" BlurRadius="18" ShadowDepth="3" Opacity="0.5"/></Border.Effect>
+              <ContentPresenter/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
 
     <Style x:Key="H1" TargetType="TextBlock">
-      <Setter Property="Foreground" Value="#EAF6FB"/>
-      <Setter Property="FontSize" Value="22"/>
-      <Setter Property="FontWeight" Value="Bold"/>
+      <Setter Property="Foreground" Value="{StaticResource TextHi}"/><Setter Property="FontSize" Value="23"/><Setter Property="FontWeight" Value="Bold"/>
     </Style>
     <Style x:Key="P" TargetType="TextBlock">
-      <Setter Property="Foreground" Value="#9FB0BF"/>
-      <Setter Property="FontSize" Value="13"/>
-      <Setter Property="TextWrapping" Value="Wrap"/>
+      <Setter Property="Foreground" Value="{StaticResource TextMut}"/><Setter Property="FontSize" Value="13"/>
+      <Setter Property="TextWrapping" Value="Wrap"/><Setter Property="LineHeight" Value="20"/>
     </Style>
   </Window.Resources>
 
-  <!-- ROOT: meteor canvas (back) + app grid (front) -->
+  <!-- ROOT -->
   <Grid>
     <Canvas Name="SkyCanvas" IsHitTestVisible="False"/>
 
-    <Grid Margin="0">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="208"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
+    <Grid>
+      <Grid.RowDefinitions>
+        <RowDefinition Height="42"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
 
-      <!-- SIDEBAR -->
-      <Border Grid.Column="0" Background="#F2080D16" BorderBrush="#16222E" BorderThickness="0,0,1,0">
-        <DockPanel LastChildFill="False">
-          <StackPanel DockPanel.Dock="Top" Margin="22,26,18,18">
-            <TextBlock Text="ROM OPTI" FontSize="22" FontWeight="Bold" Foreground="#2DD4FF"/>
-            <TextBlock Text="optimizer" FontSize="11" Foreground="#5C6B7A" Margin="2,0,0,0"/>
-          </StackPanel>
-          <StackPanel DockPanel.Dock="Top" Margin="0,6,0,0">
-            <Button Name="navHome"    Style="{StaticResource Nav}" Content="  Home"/>
-            <Button Name="navPref"    Style="{StaticResource Nav}" Content="  Preferences"/>
-            <Button Name="navTweaks"  Style="{StaticResource Nav}" Content="  Tweaks"/>
-            <Button Name="navRust"    Style="{StaticResource Nav}" Content="  Rust FPS"/>
-            <Button Name="navDebloat" Style="{StaticResource Nav}" Content="  Debloat"/>
-            <Button Name="navAbout"   Style="{StaticResource Nav}" Content="  About"/>
-          </StackPanel>
-          <TextBlock DockPanel.Dock="Bottom" Margin="22,0,18,18" FontSize="10.5"
-                     Foreground="#46535F" TextWrapping="Wrap"
-                     Text="v1.0  •  reversible via System Restore"/>
-        </DockPanel>
-      </Border>
+      <!-- TITLE BAR -->
+      <Grid Grid.Row="0" Background="Transparent">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0,0,0">
+          <Ellipse Width="9" Height="9" Fill="{StaticResource Accent}" Margin="0,0,9,0"/>
+          <TextBlock Text="ROM OPTI" Foreground="{StaticResource TextHi}" FontWeight="Bold" FontSize="13"/>
+          <TextBlock Text="optimizer" Foreground="#5A616B" FontSize="11.5" Margin="8,1,0,0"/>
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal">
+          <Button Name="btnMin"   Style="{StaticResource Cap}"      Content="&#xE921;"/>
+          <Button Name="btnMax"   Style="{StaticResource Cap}"      Content="&#xE922;"/>
+          <Button Name="btnClose" Style="{StaticResource CapClose}" Content="&#xE8BB;"/>
+        </StackPanel>
+      </Grid>
 
-      <!-- CONTENT -->
-      <Grid Grid.Column="1" Margin="18,16,18,12">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="*"/>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
+      <!-- BODY -->
+      <Grid Grid.Row="1">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="216"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
 
-        <!-- PAGE HOST -->
-        <Grid Grid.Row="0" Name="PageHost">
+        <!-- SIDEBAR -->
+        <Border Grid.Column="0" Background="#F00C0E13" BorderBrush="{StaticResource Hair}" BorderThickness="0,0,1,0">
+          <DockPanel LastChildFill="False">
+            <StackPanel DockPanel.Dock="Top" Margin="0,16,0,8">
+              <RadioButton Name="navHome"    Style="{StaticResource Nav}" GroupName="nav" Content="Home"/>
+              <RadioButton Name="navPref"    Style="{StaticResource Nav}" GroupName="nav" Content="Preferences"/>
+              <RadioButton Name="navTweaks"  Style="{StaticResource Nav}" GroupName="nav" Content="Tweaks"/>
+              <RadioButton Name="navRust"    Style="{StaticResource Nav}" GroupName="nav" Content="Rust FPS"/>
+              <RadioButton Name="navDebloat" Style="{StaticResource Nav}" GroupName="nav" Content="Debloat"/>
+              <RadioButton Name="navAbout"   Style="{StaticResource Nav}" GroupName="nav" Content="About"/>
+            </StackPanel>
+            <TextBlock DockPanel.Dock="Bottom" Margin="24,0,18,18" FontSize="10.5" Foreground="#454C55"
+                       TextWrapping="Wrap" Text="v1.0  •  reversible via System Restore"/>
+          </DockPanel>
+        </Border>
 
-          <!-- HOME -->
-          <Border Name="pgHome" CornerRadius="14" Padding="34" Visibility="Visible"
-                  Background="#D90E1825" BorderBrush="#1C2D3C" BorderThickness="1">
-            <StackPanel>
-              <TextBlock Style="{StaticResource H1}" Text="Welcome to Rom Opti"/>
-              <TextBlock Style="{StaticResource P}" Margin="0,10,0,0"
-                Text="A clean, one-click Windows optimizer and Rust FPS tuner. Pick a category on the left, hover the (?) on any option to see exactly what it does, then hit Apply. Start with the Recommended preset for a safe, balanced setup."/>
-              <StackPanel Orientation="Horizontal" Margin="0,26,0,0">
-                <Button Name="homeRecommend" Style="{StaticResource Primary}" Content="✓  Apply Recommended Preset"/>
-                <Button Name="homeRust" Content="⚡  Open Rust FPS Tweaks" Margin="10,0,0,0"/>
-              </StackPanel>
-              <Border Margin="0,30,0,0" Background="#14202D" CornerRadius="10" Padding="18">
-                <StackPanel>
-                  <TextBlock Foreground="#FFC861" FontWeight="SemiBold" FontSize="13" Text="How it works"/>
-                  <TextBlock Style="{StaticResource P}" Margin="0,6,0,0"
-                    Text="• Preferences — dark mode, taskbar, Explorer and quality-of-life toggles.&#10;• Tweaks — privacy, telemetry, and the classic system cleanups.&#10;• Rust FPS — power, GPU scheduling, latency and aim tuning for maximum frames.&#10;• Debloat — remove unused preinstalled apps and background tasks.&#10;&#10;Leave 'Create Restore Point' ticked so you can always roll back."/>
+        <!-- CONTENT -->
+        <Grid Grid.Column="1" Margin="20,14,20,16">
+          <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+
+          <Grid Grid.Row="0" Name="PageHost">
+            <Border Name="pgHome" CornerRadius="14" Padding="36" Visibility="Visible"
+                    Background="#F70F1118" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+              <StackPanel>
+                <TextBlock Style="{StaticResource H1}" Text="Welcome to Rom Opti"/>
+                <TextBlock Style="{StaticResource P}" Margin="0,12,0,0"
+                  Text="A clean, one-click Windows optimizer and Rust FPS tuner. Pick a category on the left, hover the ? on any option to see exactly what it does, then hit Apply. Start with the Recommended preset for a safe, balanced setup."/>
+                <StackPanel Orientation="Horizontal" Margin="0,28,0,0">
+                  <Button Name="homeRecommend" Style="{StaticResource Primary}" Content="Apply Recommended Preset"/>
+                  <Button Name="homeRust" Style="{StaticResource Btn}" Content="Open Rust FPS Tweaks" Margin="12,0,0,0"/>
                 </StackPanel>
-              </Border>
+                <Border Margin="0,30,0,0" CornerRadius="11" Padding="20" Background="#12141B" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+                  <StackPanel>
+                    <TextBlock Foreground="{StaticResource Gold}" FontWeight="SemiBold" FontSize="13" Text="How it works"/>
+                    <TextBlock Style="{StaticResource P}" Margin="0,8,0,0"
+                      Text="Preferences — dark mode, taskbar, Explorer and quality-of-life toggles.&#10;Tweaks — privacy, telemetry and the classic system cleanups.&#10;Rust FPS — power, GPU scheduling, latency and aim tuning for maximum frames.&#10;Debloat — remove unused preinstalled apps and background tasks.&#10;&#10;Leave 'Create Restore Point' ticked so you can always roll back."/>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </Border>
+
+            <Border Name="pgPref" CornerRadius="14" Padding="6" Visibility="Collapsed" Background="#F70F1118" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+              <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Preferences" Margin="26,20,0,2"/>
+                <TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="26,0,26,10" Text="Appearance and quality-of-life toggles."/>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="26,4,18,16"><StackPanel Name="spPreferences"/></ScrollViewer>
+              </DockPanel>
+            </Border>
+            <Border Name="pgTweaks" CornerRadius="14" Padding="6" Visibility="Collapsed" Background="#F70F1118" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+              <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Tweaks" Margin="26,20,0,2"/>
+                <TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="26,0,26,10" Text="Privacy, telemetry and classic system cleanups."/>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="26,4,18,16"><StackPanel Name="spTweaks"/></ScrollViewer>
+              </DockPanel>
+            </Border>
+            <Border Name="pgRust" CornerRadius="14" Padding="6" Visibility="Collapsed" Background="#F70F1118" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+              <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Rust FPS" Margin="26,20,0,2"/>
+                <TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="26,0,26,10" Text="Squeeze maximum frames and minimum latency out of Rust."/>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="26,4,18,16"><StackPanel Name="spRust"/></ScrollViewer>
+              </DockPanel>
+            </Border>
+            <Border Name="pgDebloat" CornerRadius="14" Padding="6" Visibility="Collapsed" Background="#F70F1118" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+              <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Debloat" Margin="26,20,0,2"/>
+                <TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="26,0,26,10" Text="Remove unused preinstalled apps and background tasks."/>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="26,4,18,16"><StackPanel Name="spDebloat"/></ScrollViewer>
+              </DockPanel>
+            </Border>
+            <Border Name="pgAbout" CornerRadius="14" Padding="36" Visibility="Collapsed" Background="#F70F1118" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+              <StackPanel>
+                <TextBlock Style="{StaticResource H1}" Text="About Rom Opti"/>
+                <TextBlock Style="{StaticResource P}" Margin="0,12,0,0"
+                  Text="Rom Opti is a lightweight, single-file Windows utility for gamers. It applies well-known, documented registry and service tweaks - the same kinds used by popular open-source optimizers - wrapped in a clean interface with plain-English explanations on every option."/>
+                <TextBlock Foreground="{StaticResource Gold}" FontWeight="SemiBold" Margin="0,24,0,0" Text="Safety"/>
+                <TextBlock Style="{StaticResource P}" Margin="0,8,0,0"
+                  Text="Nothing here is destructive, but system tweaks always carry some risk. Keep 'Create Restore Point' ticked, and if anything feels off you can roll back from Windows System Restore. A reboot is recommended after applying."/>
+                <TextBlock Foreground="{StaticResource Gold}" FontWeight="SemiBold" Margin="0,24,0,0" Text="Tip"/>
+                <TextBlock Style="{StaticResource P}" Margin="0,8,0,0"
+                  Text="Watch the sky - most meteors burn cyan, but every so often a golden one drifts past."/>
+              </StackPanel>
+            </Border>
+          </Grid>
+
+          <!-- ACTION BAR -->
+          <Border Grid.Row="1" Margin="0,14,0,0" CornerRadius="13" Padding="14,11" Background="#F00B0D13" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+            <StackPanel Orientation="Horizontal">
+              <Button Name="btnRecommend" Style="{StaticResource Btn}" Content="Recommended"/>
+              <Button Name="btnAll"  Style="{StaticResource Btn}" Content="Select All" Margin="9,0,0,0"/>
+              <Button Name="btnNone" Style="{StaticResource Btn}" Content="Clear All"  Margin="9,0,0,0"/>
+              <Button Name="btnApply" Style="{StaticResource Primary}" Content="APPLY SELECTED" Margin="9,0,0,0"/>
             </StackPanel>
           </Border>
 
-          <Border Name="pgPref" CornerRadius="14" Padding="8" Visibility="Collapsed"
-                  Background="#D90E1825" BorderBrush="#1C2D3C" BorderThickness="1">
-            <DockPanel>
-              <TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Preferences" Margin="22,18,0,4"/>
-              <TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="22,0,22,8" Text="Appearance and quality-of-life toggles."/>
-              <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="22,4,22,14">
-                <StackPanel Name="spPreferences"/>
-              </ScrollViewer>
-            </DockPanel>
-          </Border>
-
-          <Border Name="pgTweaks" CornerRadius="14" Padding="8" Visibility="Collapsed"
-                  Background="#D90E1825" BorderBrush="#1C2D3C" BorderThickness="1">
-            <DockPanel>
-              <TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Tweaks" Margin="22,18,0,4"/>
-              <TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="22,0,22,8" Text="Privacy, telemetry and classic system cleanups."/>
-              <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="22,4,22,14">
-                <StackPanel Name="spTweaks"/>
-              </ScrollViewer>
-            </DockPanel>
-          </Border>
-
-          <Border Name="pgRust" CornerRadius="14" Padding="8" Visibility="Collapsed"
-                  Background="#D90E1825" BorderBrush="#1C2D3C" BorderThickness="1">
-            <DockPanel>
-              <TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Rust FPS" Margin="22,18,0,4"/>
-              <TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="22,0,22,8" Text="Squeeze maximum frames and minimum latency out of Rust."/>
-              <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="22,4,22,14">
-                <StackPanel Name="spRust"/>
-              </ScrollViewer>
-            </DockPanel>
-          </Border>
-
-          <Border Name="pgDebloat" CornerRadius="14" Padding="8" Visibility="Collapsed"
-                  Background="#D90E1825" BorderBrush="#1C2D3C" BorderThickness="1">
-            <DockPanel>
-              <TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Debloat" Margin="22,18,0,4"/>
-              <TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="22,0,22,8" Text="Remove unused preinstalled apps and background tasks."/>
-              <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="22,4,22,14">
-                <StackPanel Name="spDebloat"/>
-              </ScrollViewer>
-            </DockPanel>
-          </Border>
-
-          <Border Name="pgAbout" CornerRadius="14" Padding="34" Visibility="Collapsed"
-                  Background="#D90E1825" BorderBrush="#1C2D3C" BorderThickness="1">
-            <StackPanel>
-              <TextBlock Style="{StaticResource H1}" Text="About Rom Opti"/>
-              <TextBlock Style="{StaticResource P}" Margin="0,10,0,0"
-                Text="Rom Opti is a lightweight, single-file Windows utility for gamers. It applies well-known, documented registry and service tweaks - the same kinds used by popular open-source optimizers - wrapped in a clean interface with plain-English explanations on every option."/>
-              <TextBlock Foreground="#FFC861" FontWeight="SemiBold" Margin="0,22,0,0" Text="Safety"/>
-              <TextBlock Style="{StaticResource P}" Margin="0,6,0,0"
-                Text="Nothing here is destructive, but system tweaks always carry some risk. Keep 'Create Restore Point' ticked, and if anything feels off you can roll back from Windows System Restore. A reboot is recommended after applying."/>
-              <TextBlock Foreground="#FFC861" FontWeight="SemiBold" Margin="0,22,0,0" Text="Tip"/>
-              <TextBlock Style="{StaticResource P}" Margin="0,6,0,0"
-                Text="Watch the sky - most meteors burn cyan, but every so often a golden one streaks past."/>
-            </StackPanel>
+          <!-- LOG -->
+          <Border Grid.Row="2" Margin="0,11,0,0" Height="120" CornerRadius="13" Padding="6" Background="#F0070810" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+            <ScrollViewer Name="logScroll" VerticalScrollBarVisibility="Auto" Padding="14,8"><ItemsControl Name="lstLog"/></ScrollViewer>
           </Border>
         </Grid>
-
-        <!-- ACTION BAR -->
-        <Border Grid.Row="1" Margin="0,12,0,0" CornerRadius="12" Padding="12,10"
-                Background="#E60A121C" BorderBrush="#1C2D3C" BorderThickness="1">
-          <StackPanel Orientation="Horizontal">
-            <Button Name="btnRecommend" Content="✓ Recommended"/>
-            <Button Name="btnAll"  Content="Select All" Margin="8,0,0,0"/>
-            <Button Name="btnNone" Content="Clear All"  Margin="8,0,0,0"/>
-            <Button Name="btnApply" Style="{StaticResource Primary}" Content="⚡ APPLY SELECTED" Margin="8,0,0,0"/>
-          </StackPanel>
-        </Border>
-
-        <!-- LOG -->
-        <Border Grid.Row="2" Margin="0,10,0,0" Height="118" CornerRadius="12" Padding="4"
-                Background="#E6070C14" BorderBrush="#16222E" BorderThickness="1">
-          <ScrollViewer Name="logScroll" VerticalScrollBarVisibility="Auto" Padding="12,6">
-            <ItemsControl Name="lstLog"/>
-          </ScrollViewer>
-        </Border>
       </Grid>
     </Grid>
   </Grid>
@@ -503,23 +749,30 @@ $Tweaks = @(
 '@
 
 # ---- 6. LOAD + WIRE --------------------------------------------------------
-$reader = New-Object System.Xml.XmlNodeReader $xaml
-$window = [Windows.Markup.XamlReader]::Load($reader)
+try {
+    $reader = New-Object System.Xml.XmlNodeReader $xaml
+    $window = [Windows.Markup.XamlReader]::Load($reader)
+} catch {
+    [System.Windows.MessageBox]::Show("UI failed to load:`n$($_.Exception.Message)","Rom Opti") | Out-Null
+    exit
+}
 
 $SkyCanvas = $window.FindName('SkyCanvas')
 $lstLog    = $window.FindName('lstLog')
 $logScroll = $window.FindName('logScroll')
 
 function B($hex) { New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString($hex)) }
-$c_ok=B '#5BE08A'; $c_err=B '#F87171'; $c_warn=B '#FBBF24'; $c_info=B '#8FA0B2'; $c_accent=B '#2DD4FF'
-$brushSub=B '#8A97A6'; $brushNavActive=B '#10293A'
+$c_ok=B '#62E08C'; $c_err=B '#F2706F'; $c_warn=B '#E6B45C'; $c_info=B '#828A94'; $c_accent=B '#54C7E0'
 
 function Write-Log {
     param([string]$msg, [string]$kind='info')
     $tb = New-Object Windows.Controls.TextBlock
-    $tb.Text = $msg; $tb.TextWrapping='Wrap'; $tb.FontSize=12; $tb.Margin='0,1,0,1'; $tb.FontFamily='Consolas'
+    $tb.Text=$msg; $tb.TextWrapping='Wrap'; $tb.FontSize=12; $tb.Margin='0,1.5,0,1.5'; $tb.FontFamily='Cascadia Mono, Consolas'
     $tb.Foreground = switch ($kind) { 'ok'{$c_ok} 'err'{$c_err} 'warn'{$c_warn} 'accent'{$c_accent} default{$c_info} }
+    $tb.Opacity=0
     $lstLog.Items.Add($tb) | Out-Null
+    $fade = New-Object Windows.Media.Animation.DoubleAnimation 0,1,(New-Object Windows.Duration ([TimeSpan]::FromMilliseconds(260)))
+    $tb.BeginAnimation([Windows.UIElement]::OpacityProperty,$fade)
     $logScroll.ScrollToEnd()
 }
 function DoEvents {
@@ -528,177 +781,194 @@ function DoEvents {
     [System.Windows.Threading.Dispatcher]::PushFrame($frame)
 }
 
-# ---- METEOR SHOWER ---------------------------------------------------------
+# ---- METEOR SHOWER (parallax layers + fade + twinkle + rare gold) ----------
 function New-Meteor {
-    param($w, $h)
-    $isGold = ($script:rng.NextDouble() -lt 0.13)            # rare golden meteors
-    $len = if ($isGold) { $script:rng.Next(95,165) } else { $script:rng.Next(45,110) }
-    $thk = if ($isGold) { 2.7 } else { 1.7 }
-    $angle = 27 + $script:rng.Next(-5,6)
+    param($w, $h, $layer)   # layer 1=far 2=mid 3=near
+    $isGold = ($script:rng.NextDouble() -lt 0.10)
+    switch ($layer) {
+        1 { $lmin=30;$lmax=70;  $thk=1.1; $base=0.34; $dmin=22;$dmax=34 }
+        2 { $lmin=55;$lmax=105; $thk=1.7; $base=0.62; $dmin=15;$dmax=25 }
+        default { $lmin=85;$lmax=150;$thk=2.4; $base=0.92; $dmin=11;$dmax=19 }
+    }
+    $len = if ($isGold) { [int]($lmax*1.25) } else { $script:rng.Next($lmin,$lmax) }
+    if ($isGold) { $thk += 0.7; $base = [Math]::Min(1.0,$base+0.1) }
+    $angle = 26 + $script:rng.Next(-4,5)
     $rad = $angle * [Math]::PI / 180
 
     $m = New-Object Windows.Controls.Canvas
-    $m.Width = $len; $m.Height = $thk
+    $m.Width=$len; $m.Height=$thk
 
-    # trail (transparent tail -> bright head)
     $rect = New-Object Windows.Shapes.Rectangle
     $rect.Width=$len; $rect.Height=$thk; $rect.RadiusX=$thk/2; $rect.RadiusY=$thk/2
     $grad = New-Object Windows.Media.LinearGradientBrush
     $grad.StartPoint='0,0.5'; $grad.EndPoint='1,0.5'
     if ($isGold) {
-        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(0,255,200,90),0.0)))
-        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(120,255,205,110),0.72)))
-        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(255,255,236,170),1.0)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(0,255,196,90),0.0)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(110,255,202,108),0.7)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(255,255,236,176),1.0)))
     } else {
-        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(0,150,225,255),0.0)))
-        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(110,180,235,255),0.74)))
-        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(245,233,251,255),1.0)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(0,120,210,240),0.0)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(105,150,225,248),0.72)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(245,228,250,255),1.0)))
     }
-    $rect.Fill = $grad
+    $rect.Fill=$grad
     [Windows.Controls.Canvas]::SetLeft($rect,0); [Windows.Controls.Canvas]::SetTop($rect,0)
     $m.Children.Add($rect) | Out-Null
 
-    # glowing head
     $head = New-Object Windows.Shapes.Ellipse
-    $hr = if ($isGold) { 3.6 } else { 2.4 }
+    $hr = if ($isGold) { 3.6 } else { ($thk*0.9)+1.1 }
     $head.Width=$hr*2; $head.Height=$hr*2
-    $head.Fill = if ($isGold) { B '#FFF0C8' } else { B '#EAFBFF' }
-    if ($isGold) {
+    $head.Fill = if ($isGold) { B '#FFF1CC' } else { B '#E9FAFF' }
+    if ($isGold -or $layer -eq 3) {
         $glow = New-Object Windows.Media.Effects.DropShadowEffect
-        $glow.Color=[Windows.Media.Color]::FromRgb(255,200,97); $glow.BlurRadius=14; $glow.ShadowDepth=0; $glow.Opacity=0.9
+        $glow.Color = if ($isGold) { [Windows.Media.Color]::FromRgb(255,196,92) } else { [Windows.Media.Color]::FromRgb(120,220,240) }
+        $glow.BlurRadius = if ($isGold) { 16 } else { 9 }; $glow.ShadowDepth=0; $glow.Opacity=0.9
         $head.Effect=$glow
     }
     [Windows.Controls.Canvas]::SetLeft($head, $len-$hr); [Windows.Controls.Canvas]::SetTop($head, ($thk/2)-$hr)
     $m.Children.Add($head) | Out-Null
 
-    # transform: rotate to travel angle, then translate diagonally
     $rot = New-Object Windows.Media.RotateTransform ($angle,0,0)
     $tt  = New-Object Windows.Media.TranslateTransform
     $tg  = New-Object Windows.Media.TransformGroup
     $tg.Children.Add($rot); $tg.Children.Add($tt)
-    $m.RenderTransform = $tg
+    $m.RenderTransform=$tg
 
-    $dist  = $h + $len + 280
-    $startX = $script:rng.Next(-320, [int]$w)
-    $startY = -1 * $script:rng.Next(60, 380)
-    $endX = $startX + $dist*[Math]::Cos($rad)
-    $endY = $startY + $dist*[Math]::Sin($rad)
-    $dur   = if ($isGold) { $script:rng.Next(28,46)/10 } else { $script:rng.Next(13,27)/10 }
-    $delay = $script:rng.Next(0,70)/10
+    $dist=$h+$len+300
+    $startX=$script:rng.Next(-340,[int]$w)
+    $startY=-1*$script:rng.Next(60,420)
+    $endX=$startX+$dist*[Math]::Cos($rad)
+    $endY=$startY+$dist*[Math]::Sin($rad)
+    $dur  = if ($isGold) { $script:rng.Next(($dmax+8),($dmax+20))/10 } else { $script:rng.Next($dmin,$dmax)/10 }
+    $delay= $script:rng.Next(0,90)/10
+    $durObj = New-Object Windows.Duration ([TimeSpan]::FromSeconds($dur))
+    $beg = [TimeSpan]::FromSeconds($delay)
 
-    $ax = New-Object Windows.Media.Animation.DoubleAnimation
-    $ax.From=$startX; $ax.To=$endX
-    $ax.Duration = New-Object Windows.Duration ([TimeSpan]::FromSeconds($dur))
-    $ax.BeginTime = [TimeSpan]::FromSeconds($delay)
-    $ax.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
-    $ay = New-Object Windows.Media.Animation.DoubleAnimation
-    $ay.From=$startY; $ay.To=$endY
-    $ay.Duration = New-Object Windows.Duration ([TimeSpan]::FromSeconds($dur))
-    $ay.BeginTime = [TimeSpan]::FromSeconds($delay)
-    $ay.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
+    $ax=New-Object Windows.Media.Animation.DoubleAnimation; $ax.From=$startX; $ax.To=$endX; $ax.Duration=$durObj; $ax.BeginTime=$beg; $ax.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
+    $ay=New-Object Windows.Media.Animation.DoubleAnimation; $ay.From=$startY; $ay.To=$endY; $ay.Duration=$durObj; $ay.BeginTime=$beg; $ay.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
+    $tt.BeginAnimation([Windows.Media.TranslateTransform]::XProperty,$ax)
+    $tt.BeginAnimation([Windows.Media.TranslateTransform]::YProperty,$ay)
 
-    $tt.BeginAnimation([Windows.Media.TranslateTransform]::XProperty, $ax)
-    $tt.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, $ay)
+    # fade in/out so trails never pop
+    $op=New-Object Windows.Media.Animation.DoubleAnimationUsingKeyFrames
+    $op.Duration=$durObj; $op.BeginTime=$beg; $op.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
+    $op.KeyFrames.Add((New-Object Windows.Media.Animation.LinearDoubleKeyFrame(0.0,[Windows.Media.Animation.KeyTime]::FromPercent(0.0)))) | Out-Null
+    $op.KeyFrames.Add((New-Object Windows.Media.Animation.LinearDoubleKeyFrame($base,[Windows.Media.Animation.KeyTime]::FromPercent(0.14)))) | Out-Null
+    $op.KeyFrames.Add((New-Object Windows.Media.Animation.LinearDoubleKeyFrame($base,[Windows.Media.Animation.KeyTime]::FromPercent(0.74)))) | Out-Null
+    $op.KeyFrames.Add((New-Object Windows.Media.Animation.LinearDoubleKeyFrame(0.0,[Windows.Media.Animation.KeyTime]::FromPercent(1.0)))) | Out-Null
+    $m.BeginAnimation([Windows.UIElement]::OpacityProperty,$op)
     return $m
 }
 
-function Build-Sky {
-    $w = $SkyCanvas.ActualWidth;  if ($w -lt 50) { $w = 900 }
-    $h = $SkyCanvas.ActualHeight; if ($h -lt 50) { $h = 820 }
-    $SkyCanvas.Children.Clear()
-    # faint static stars for depth
-    for ($i=0; $i -lt 70; $i++) {
-        $s = New-Object Windows.Shapes.Ellipse
-        $r = $script:rng.Next(4,14)/10
-        $s.Width=$r*2; $s.Height=$r*2; $s.Fill=B '#9FC7DA'
-        $s.Opacity = $script:rng.Next(8,42)/100
-        [Windows.Controls.Canvas]::SetLeft($s, $script:rng.Next(0,[int]$w))
-        [Windows.Controls.Canvas]::SetTop($s, $script:rng.Next(0,[int]$h))
-        $SkyCanvas.Children.Add($s) | Out-Null
+function New-Star {
+    param($w,$h)
+    $s=New-Object Windows.Shapes.Ellipse
+    $r=$script:rng.Next(4,13)/10
+    $s.Width=$r*2; $s.Height=$r*2; $s.Fill=B '#AFC9D8'
+    $baseOp=$script:rng.Next(7,40)/100
+    $s.Opacity=$baseOp
+    [Windows.Controls.Canvas]::SetLeft($s,$script:rng.Next(0,[int]$w))
+    [Windows.Controls.Canvas]::SetTop($s,$script:rng.Next(0,[int]$h))
+    if ($script:rng.NextDouble() -lt 0.34) {   # ~1/3 twinkle
+        $tw=New-Object Windows.Media.Animation.DoubleAnimation
+        $tw.From=$baseOp*0.3; $tw.To=[Math]::Min(0.85,$baseOp+0.3)
+        $tw.Duration=New-Object Windows.Duration ([TimeSpan]::FromSeconds($script:rng.Next(14,40)/10))
+        $tw.BeginTime=[TimeSpan]::FromSeconds($script:rng.Next(0,40)/10)
+        $tw.AutoReverse=$true; $tw.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
+        $ease=New-Object Windows.Media.Animation.SineEase; $ease.EasingMode='EaseInOut'; $tw.EasingFunction=$ease
+        $s.BeginAnimation([Windows.UIElement]::OpacityProperty,$tw)
     }
-    # meteors
-    for ($i=0; $i -lt 24; $i++) { $SkyCanvas.Children.Add((New-Meteor -w $w -h $h)) | Out-Null }
+    return $s
 }
 
-# ---- BUILD CHECKBOX LISTS --------------------------------------------------
-$panels = @{ Preferences=$window.FindName('spPreferences'); Tweaks=$window.FindName('spTweaks')
-             Rust=$window.FindName('spRust'); Debloat=$window.FindName('spDebloat') }
-$CheckBoxes = @{}
+function Build-Sky {
+    $w=$SkyCanvas.ActualWidth;  if ($w -lt 50){$w=940}
+    $h=$SkyCanvas.ActualHeight; if ($h -lt 50){$h=840}
+    $SkyCanvas.Children.Clear()
+    for ($i=0;$i -lt 110;$i++){ $SkyCanvas.Children.Add((New-Star -w $w -h $h)) | Out-Null }
+    $layerCounts = [ordered]@{ 1=11; 2=10; 3=8 }   # far / mid / near
+    foreach ($layer in $layerCounts.Keys) {
+        for ($i=0;$i -lt $layerCounts[$layer];$i++){ $SkyCanvas.Children.Add((New-Meteor -w $w -h $h -layer ([int]$layer))) | Out-Null }
+    }
+}
+
+# ---- CHECKBOX LISTS --------------------------------------------------------
+$panels=@{ Preferences=$window.FindName('spPreferences'); Tweaks=$window.FindName('spTweaks'); Rust=$window.FindName('spRust'); Debloat=$window.FindName('spDebloat') }
+$helpStyle=$window.TryFindResource('Help')
+$CheckBoxes=@{}
 foreach ($t in $Tweaks) {
-    $row = New-Object Windows.Controls.StackPanel
-    $row.Orientation='Horizontal'; $row.Margin='0,5,0,5'
-    $cb = New-Object Windows.Controls.CheckBox
-    $cb.Content = $t.Name
-    if ($t.PSObject.Properties.Name -contains 'Default' -and $t.Default) { $cb.IsChecked=$true }
-    $q = New-Object Windows.Controls.TextBlock
-    $q.Text='  (?)'; $q.Foreground=$c_accent; $q.FontWeight='Bold'; $q.FontSize=12
-    $q.VerticalAlignment='Center'; $q.Cursor='Help'; $q.ToolTip=$t.Desc
-    [Windows.Controls.ToolTipService]::SetInitialShowDelay($q,150)
-    [Windows.Controls.ToolTipService]::SetShowDuration($q,60000)
-    $row.AddChild($cb); $row.AddChild($q)
+    $row=New-Object Windows.Controls.StackPanel; $row.Orientation='Horizontal'; $row.Margin='0,6,0,6'
+    $cb=New-Object Windows.Controls.CheckBox; $cb.Content=$t.Name; $cb.VerticalAlignment='Center'
+    if ($t.PSObject.Properties.Name -contains 'Default' -and $t.Default){ $cb.IsChecked=$true }
+    $badge=New-Object Windows.Controls.Border; $badge.Style=$helpStyle; $badge.ToolTip=$t.Desc
+    $qm=New-Object Windows.Controls.TextBlock; $qm.Text='?'; $qm.FontSize=11; $qm.FontWeight='Bold'
+    $qm.Foreground=$c_accent; $qm.HorizontalAlignment='Center'; $qm.VerticalAlignment='Center'
+    $badge.Child=$qm
+    [Windows.Controls.ToolTipService]::SetInitialShowDelay($badge,140)
+    [Windows.Controls.ToolTipService]::SetShowDuration($badge,60000)
+    $row.AddChild($cb); $row.AddChild($badge)
     $panels[$t.Category].AddChild($row)
     $CheckBoxes[$t.Id]=$cb
 }
 
-# ---- NAVIGATION ------------------------------------------------------------
-$pages = @{ Home=$window.FindName('pgHome'); Preferences=$window.FindName('pgPref')
-            Tweaks=$window.FindName('pgTweaks'); Rust=$window.FindName('pgRust')
-            Debloat=$window.FindName('pgDebloat'); About=$window.FindName('pgAbout') }
-$navs  = @{ Home=$window.FindName('navHome'); Preferences=$window.FindName('navPref')
-            Tweaks=$window.FindName('navTweaks'); Rust=$window.FindName('navRust')
-            Debloat=$window.FindName('navDebloat'); About=$window.FindName('navAbout') }
-function Show-Page($name) {
-    foreach ($k in $pages.Keys) { $pages[$k].Visibility='Collapsed' }
-    $pages[$name].Visibility='Visible'
-    foreach ($k in $navs.Keys) {
-        if ($k -eq $name) { $navs[$k].Background=$brushNavActive; $navs[$k].Foreground=$c_accent }
-        else { $navs[$k].Background=[Windows.Media.Brushes]::Transparent; $navs[$k].Foreground=$brushSub }
-    }
+# ---- NAVIGATION (animated page transition) ---------------------------------
+$pages=@{ Home=$window.FindName('pgHome'); Preferences=$window.FindName('pgPref'); Tweaks=$window.FindName('pgTweaks'); Rust=$window.FindName('pgRust'); Debloat=$window.FindName('pgDebloat'); About=$window.FindName('pgAbout') }
+$navs =@{ Home=$window.FindName('navHome'); Preferences=$window.FindName('navPref'); Tweaks=$window.FindName('navTweaks'); Rust=$window.FindName('navRust'); Debloat=$window.FindName('navDebloat'); About=$window.FindName('navAbout') }
+function Show-Page($name){
+    foreach($k in $pages.Keys){ $pages[$k].Visibility='Collapsed' }
+    $p=$pages[$name]; $p.Visibility='Visible'
+    $tt=New-Object Windows.Media.TranslateTransform; $p.RenderTransform=$tt
+    $ease=New-Object Windows.Media.Animation.CubicEase; $ease.EasingMode='EaseOut'
+    $fade=New-Object Windows.Media.Animation.DoubleAnimation 0,1,(New-Object Windows.Duration ([TimeSpan]::FromMilliseconds(220))); $fade.EasingFunction=$ease
+    $slide=New-Object Windows.Media.Animation.DoubleAnimation 14,0,(New-Object Windows.Duration ([TimeSpan]::FromMilliseconds(280))); $slide.EasingFunction=$ease
+    $p.BeginAnimation([Windows.UIElement]::OpacityProperty,$fade)
+    $tt.BeginAnimation([Windows.Media.TranslateTransform]::YProperty,$slide)
 }
-$navs.Keys | ForEach-Object { $n=$_; $navs[$n].Add_Click({ Show-Page $n }.GetNewClosure()) }
+foreach ($k in @($navs.Keys)) { $n=$k; $navs[$n].Add_Checked({ Show-Page $n }.GetNewClosure()) }
 
 # ---- ACTIONS ---------------------------------------------------------------
 function Set-Recommended {
-    foreach ($t in $Tweaks) {
-        $rec = ($t.PSObject.Properties.Name -contains 'Recommended' -and $t.Recommended)
-        $CheckBoxes[$t.Id].IsChecked=[bool]$rec
-    }
+    foreach ($t in $Tweaks){ $rec=($t.PSObject.Properties.Name -contains 'Recommended' -and $t.Recommended); $CheckBoxes[$t.Id].IsChecked=[bool]$rec }
     Write-Log 'Recommended safe preset selected. Review, then APPLY.' 'accent'
 }
 function Invoke-Apply {
-    $window.FindName('btnApply').IsEnabled=$false
+    $btn=$window.FindName('btnApply'); $btn.IsEnabled=$false
     $lstLog.Items.Clear()
     Write-Log '=== Rom Opti :: applying selected optimizations ===' 'accent'
-    $sel = $Tweaks | Where-Object { $CheckBoxes[$_.Id].IsChecked }
-    if (-not $sel) { Write-Log 'Nothing selected. Tick some options first.' 'warn'; $window.FindName('btnApply').IsEnabled=$true; return }
-    $sel = $sel | Sort-Object { if ($_.Id -eq 'tw_restore') {0} else {1} }
+    $sel=$Tweaks | Where-Object { $CheckBoxes[$_.Id].IsChecked }
+    if (-not $sel){ Write-Log 'Nothing selected. Tick some options first.' 'warn'; $btn.IsEnabled=$true; return }
+    $sel=$sel | Sort-Object { if ($_.Id -eq 'tw_restore'){0}else{1} }
     $needExplorer=$false
-    foreach ($t in $sel) {
-        try { & $t.Apply; Write-Log ("[OK]   "+$t.Name) 'ok'
-              if ($t.PSObject.Properties.Name -contains 'ExplorerRestart' -and $t.ExplorerRestart) { $needExplorer=$true } }
+    foreach ($t in $sel){
+        try { & $t.Apply; Write-Log ("[ OK ] "+$t.Name) 'ok'
+              if ($t.PSObject.Properties.Name -contains 'ExplorerRestart' -and $t.ExplorerRestart){ $needExplorer=$true } }
         catch { Write-Log ("[FAIL] "+$t.Name+"  ->  "+$_.Exception.Message) 'err' }
         DoEvents
     }
-    if ($needExplorer) { Write-Log 'Restarting Explorer to apply interface changes...' 'accent'; DoEvents
-                         Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue }
+    if ($needExplorer){ Write-Log 'Restarting Explorer to apply interface changes...' 'accent'; DoEvents; Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue }
     Write-Log '=== Done. A reboot is recommended for full effect. ===' 'ok'
-    $window.FindName('btnApply').IsEnabled=$true
+    $btn.IsEnabled=$true
 }
-
 $window.FindName('btnRecommend').Add_Click({ Set-Recommended })
 $window.FindName('btnAll').Add_Click({ foreach ($cb in $CheckBoxes.Values){ $cb.IsChecked=$true } })
 $window.FindName('btnNone').Add_Click({ foreach ($cb in $CheckBoxes.Values){ $cb.IsChecked=$false } })
 $window.FindName('btnApply').Add_Click({ Invoke-Apply })
-$window.FindName('homeRecommend').Add_Click({ Set-Recommended; Show-Page 'Tweaks' })
-$window.FindName('homeRust').Add_Click({ Show-Page 'Rust' })
+$window.FindName('homeRecommend').Add_Click({ Set-Recommended; $navs['Tweaks'].IsChecked=$true })
+$window.FindName('homeRust').Add_Click({ $navs['Rust'].IsChecked=$true })
+
+# ---- WINDOW CONTROLS -------------------------------------------------------
+$window.FindName('btnMin').Add_Click({ $window.WindowState='Minimized' })
+$window.FindName('btnMax').Add_Click({ if ($window.WindowState -eq 'Maximized'){ $window.WindowState='Normal' } else { $window.WindowState='Maximized' } })
+$window.FindName('btnClose').Add_Click({ $window.Close() })
 
 # ---- START -----------------------------------------------------------------
 $window.Add_Loaded({
     Build-Sky
-    Show-Page 'Home'
+    $navs['Home'].IsChecked=$true
     Write-Log 'Welcome to Rom Opti. Click Recommended for a safe preset, or pick your own.' 'accent'
     Write-Log 'Tip: leave "Create Restore Point" ticked so you can always roll back.' 'info'
 })
-$window.Add_SizeChanged({ if ($SkyCanvas.ActualWidth -gt 50) { Build-Sky } })
+$window.Add_SizeChanged({ if ($SkyCanvas.ActualWidth -gt 50){ Build-Sky } })
 
-$window.ShowDialog() | Out-Null
+try { $window.ShowDialog() | Out-Null }
+catch { [System.Windows.MessageBox]::Show("Runtime error:`n$($_.Exception.Message)","Rom Opti") | Out-Null }
