@@ -265,7 +265,7 @@ $Tweaks = @(
 
   <shell:WindowChrome.WindowChrome>
     <shell:WindowChrome CaptionHeight="42" ResizeBorderThickness="6" CornerRadius="0"
-                        GlassFrameThickness="1" UseAeroCaptionButtons="False"/>
+                        GlassFrameThickness="0" UseAeroCaptionButtons="False"/>
   </shell:WindowChrome.WindowChrome>
 
   <Window.Background>
@@ -439,7 +439,6 @@ $Tweaks = @(
       <Setter Property="Foreground" Value="#9097A1"/>
       <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/><Setter Property="FontSize" Value="10"/>
       <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
@@ -495,7 +494,7 @@ $Tweaks = @(
             <ControlTemplate.Triggers>
               <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard>
                 <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#15181F" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></EventTrigger>
-              <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard x:Name="lv">
+              <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard>
                 <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.16"/></Storyboard></BeginStoryboard></EventTrigger>
               <Trigger Property="IsChecked" Value="True">
                 <Setter TargetName="bd" Property="Background"><Setter.Value><SolidColorBrush Color="#16202A"/></Setter.Value></Setter>
@@ -543,8 +542,7 @@ $Tweaks = @(
             </StackPanel>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="br" Property="Color" Value="#54C7E0"/>
-                <Setter TargetName="lbl" Property="TextElement.Foreground" Value="{StaticResource TextHi}"/>
+                <Setter Property="Foreground" Value="{StaticResource TextHi}"/>
               </Trigger>
               <Trigger Property="IsChecked" Value="True">
                 <Trigger.EnterActions>
@@ -633,9 +631,9 @@ $Tweaks = @(
           <TextBlock Text="optimizer" Foreground="#5A616B" FontSize="11.5" Margin="8,1,0,0"/>
         </StackPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal">
-          <Button Name="btnMin"   Style="{StaticResource Cap}"      Content="&#xE921;"/>
-          <Button Name="btnMax"   Style="{StaticResource Cap}"      Content="&#xE922;"/>
-          <Button Name="btnClose" Style="{StaticResource CapClose}" Content="&#xE8BB;"/>
+          <Button Name="btnMin"   Style="{StaticResource Cap}"      shell:WindowChrome.IsHitTestVisibleInChrome="True" Content="&#xE921;"/>
+          <Button Name="btnMax"   Style="{StaticResource Cap}"      shell:WindowChrome.IsHitTestVisibleInChrome="True" Content="&#xE922;"/>
+          <Button Name="btnClose" Style="{StaticResource CapClose}" shell:WindowChrome.IsHitTestVisibleInChrome="True" Content="&#xE8BB;"/>
         </StackPanel>
       </Grid>
 
