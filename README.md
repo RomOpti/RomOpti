@@ -1,4 +1,4 @@
-## Hi there 👋
+## This is an optimization tool FULLY made by me @rrromuluss on yt/dc. This has practically everything you would want to get an edge on fps in rust and/or smoother gameplay. 
 
 <!--
 **RomOpti/RomOpti** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
