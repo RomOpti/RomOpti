@@ -272,6 +272,50 @@ $Tweaks = @(
  [pscustomobject]@{ Id='r_fth'; Category='Rust'; Name='Disable Fault Tolerant Heap'
    Desc='Disables the Fault Tolerant Heap, which can silently throttle a program after it has crashed once. Keeps the game running at full speed.'
    Apply={ Set-Reg 'HKLM:\SOFTWARE\Microsoft\FTH' 'Enabled' 0 } }
+ [pscustomobject]@{ Id='r_sysresp'; Category='Rust'; Name='Max System Responsiveness (lower latency)'; Recommended=$true
+   Desc='Sets SystemResponsiveness to 0 so Windows reserves no CPU for background work and hands it all to the foreground game. Lowers input latency and frame pacing jitter.'
+   Apply={ Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'SystemResponsiveness' 0 } }
+ [pscustomobject]@{ Id='r_stickykeys'; Category='Rust'; Name='Disable Sticky / Filter / Toggle Keys'; Recommended=$true
+   Desc='Turns off the accessibility key hooks that can intercept input and pop up mid-game. Removes a real source of input delay and interruptions.'
+   Apply={ Set-Reg 'HKCU:\Control Panel\Accessibility\StickyKeys' 'Flags' '506' 'String'
+           Set-Reg 'HKCU:\Control Panel\Accessibility\Keyboard Response' 'Flags' '122' 'String'
+           Set-Reg 'HKCU:\Control Panel\Accessibility\ToggleKeys' 'Flags' '58' 'String' } }
+ [pscustomobject]@{ Id='r_keyboarddelay'; Category='Rust'; Name='Fastest Keyboard Response'; Recommended=$true
+   Desc='Sets the keyboard repeat delay to the minimum and repeat rate to the maximum so key presses register instantly.'
+   Apply={ Set-Reg 'HKCU:\Control Panel\Keyboard' 'KeyboardDelay' '0' 'String'
+           Set-Reg 'HKCU:\Control Panel\Keyboard' 'KeyboardSpeed' '31' 'String' } }
+ [pscustomobject]@{ Id='r_menudelay'; Category='Rust'; Name='Zero Menu / UI Delay'; Recommended=$true
+   Desc='Removes the built-in delay before menus and the desktop UI respond, making alt-tab and window switching feel instant.'
+   Apply={ Set-Reg 'HKCU:\Control Panel\Desktop' 'MenuShowDelay' '0' 'String'
+           Set-Reg 'HKCU:\Control Panel\Desktop' 'AutoEndTasks' '1' 'String' } }
+ [pscustomobject]@{ Id='r_tcpack'; Category='Rust'; Name='Disable TCP Delayed ACK (lower ping)'; Recommended=$true
+   Desc='Forces the network stack to acknowledge packets immediately on every adapter instead of batching them. One of the biggest real reductions in network latency for online games.'
+   Apply={ $ifs='HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'
+           Get-ChildItem $ifs -ErrorAction SilentlyContinue | ForEach-Object {
+             $p=Join-Path $ifs $_.PSChildName
+             Set-Reg $p 'TcpAckFrequency' 1
+             Set-Reg $p 'TCPNoDelay' 1
+             Set-Reg $p 'TcpDelAckTicks' 0 } } }
+ [pscustomobject]@{ Id='r_qos'; Category='Rust'; Name='Remove QoS Reserved Bandwidth'; Recommended=$true
+   Desc='Stops the QoS Packet Scheduler from holding back a slice of your connection, freeing 100% of your bandwidth for the game.'
+   Apply={ Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit' 0 } }
+ [pscustomobject]@{ Id='r_nettune'; Category='Rust'; Name='Low-Latency Network Tuning'; Recommended=$true
+   Desc='Applies a conservative, fully reversible set of TCP tweaks (disable heuristics, timestamps and ECN, enable RSS) that trim network overhead and smooth out latency.'
+   Apply={ netsh int tcp set heuristics disabled | Out-Null
+           netsh int tcp set global timestamps=disabled | Out-Null
+           netsh int tcp set global ecncapability=disabled | Out-Null
+           netsh int tcp set global rss=enabled | Out-Null } }
+ [pscustomobject]@{ Id='r_tdr'; Category='Rust'; Name='Raise GPU Timeout (fewer driver stalls)'; Recommended=$true
+   Desc='Increases the GPU TDR delay so the driver does not reset itself during heavy load spikes, which removes a common cause of freezes and frametime stutter.'
+   Apply={ Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'TdrDelay' 10
+           Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'TdrDdiDelay' 10 } }
+ [pscustomobject]@{ Id='r_notif'; Category='Rust'; Name='Disable Notifications & Toasts'; Recommended=$true
+   Desc='Stops Windows toast notifications from firing while you play, removing pop-up interruptions and the brief hitch they can cause.'
+   Apply={ Set-Reg 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\PushNotifications' 'ToastEnabled' 0 } }
+ [pscustomobject]@{ Id='r_vbs'; Category='Rust'; Name='Disable VBS / Memory Integrity (big FPS, advanced)'
+   Desc='Turns off Virtualization-Based Security and HVCI / Memory Integrity, which can cost 5-15% performance in CPU-bound games like Rust. SECURITY TRADE-OFF: this lowers some exploit protection. Reboot required; fully reversible in Windows Security > Core Isolation.'
+   Apply={ Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled' 0
+           Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' 'EnableVirtualizationBasedSecurity' 0 } }
 #endregion
 #region DEBLOAT
  [pscustomobject]@{ Id='db_apps'; Category='Debloat'; Name='Remove Bloatware Apps'; Recommended=$true
