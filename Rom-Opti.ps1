@@ -217,6 +217,61 @@ $Tweaks = @(
  [pscustomobject]@{ Id='r_launch'; Category='Rust'; Name='Copy Recommended Rust Launch Options'
    Desc='Copies a tuned Steam launch-options string to your clipboard. Paste into Steam > Rust > Properties > Launch Options.'
    Apply={ '-high -maxMem=16384 -malloc=system -force-d3d11-no-singlethreaded -window-mode exclusive' | Set-Clipboard } }
+ [pscustomobject]@{ Id='r_priosep'; Category='Rust'; Name='Foreground Priority Boost'; Recommended=$true
+   Desc='Sets Win32PrioritySeparation so the game in focus gets a much larger share of CPU time than background apps. One of the biggest single FPS/responsiveness wins.'
+   Apply={ Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 38 } }
+ [pscustomobject]@{ Id='r_minproc'; Category='Rust'; Name='Lock CPU at 100% Clock State'; Recommended=$true
+   Desc='Forces the minimum and maximum processor state to 100% so your CPU never drops clock speed mid-game. Eliminates clock-ramp stutter. Best on desktop / plugged-in.'
+   Apply={ powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100 | Out-Null
+           powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 | Out-Null
+           powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100 | Out-Null
+           powercfg -setactive scheme_current | Out-Null } }
+ [pscustomobject]@{ Id='r_usb'; Category='Rust'; Name='Disable USB Selective Suspend'; Recommended=$true
+   Desc='Stops Windows from power-saving your USB ports, which removes micro-stutters and input lag from your mouse and keyboard.'
+   Apply={ powercfg -setacvalueindex scheme_current 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 | Out-Null
+           powercfg -setdcvalueindex scheme_current 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 0 | Out-Null
+           powercfg -setactive scheme_current | Out-Null } }
+ [pscustomobject]@{ Id='r_pcie'; Category='Rust'; Name='Disable PCIe Power Saving (ASPM)'; Recommended=$true
+   Desc='Turns off PCI Express link-state power management so your GPU and NVMe drive always run at full bandwidth and lowest latency.'
+   Apply={ powercfg -setacvalueindex scheme_current 501a4d13-42af-4429-9fd1-a8218c268e20 ee12f906-d277-404b-b6da-e5fa1a576df5 0 | Out-Null
+           powercfg -setdcvalueindex scheme_current 501a4d13-42af-4429-9fd1-a8218c268e20 ee12f906-d277-404b-b6da-e5fa1a576df5 0 | Out-Null
+           powercfg -setactive scheme_current | Out-Null } }
+ [pscustomobject]@{ Id='r_bgapps'; Category='Rust'; Name='Disable Background Apps'; Recommended=$true
+   Desc='Stops Store/UWP apps from running in the background, freeing CPU, RAM and network for the game.'
+   Apply={ Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications' 'GlobalUserDisabled' 1
+           Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy' 'LetAppsRunInBackground' 2 } }
+ [pscustomobject]@{ Id='r_prefetch'; Category='Rust'; Name='Disable Prefetch & Superfetch (SSD)'; Recommended=$true
+   Desc='Disables the prefetcher on SSD/NVMe systems to stop background disk reads that cause hitching. Skip on a mechanical HDD.'
+   Apply={ $pp='HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters'
+           Set-Reg $pp 'EnablePrefetcher' 0
+           Set-Reg $pp 'EnableSuperfetch' 0 } }
+ [pscustomobject]@{ Id='r_xblsvc'; Category='Rust'; Name='Set Xbox Background Services to Manual'; Recommended=$true
+   Desc='Stops the always-on Xbox Live services from running in the background. Steam games like Rust do not need them.'
+   Apply={ 'XblAuthManager','XblGameSave','XboxNetApiSvc','XboxGipSvc' | ForEach-Object { Set-ServiceState -Name $_ -Startup Manual -Stop } } }
+ [pscustomobject]@{ Id='r_startdelay'; Category='Rust'; Name='Disable Startup Delay'; Recommended=$true
+   Desc='Removes the artificial delay Windows adds before launching startup apps, so your system reaches an idle, game-ready state faster.'
+   Apply={ Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize' 'StartupDelayInMSec' 0 } }
+ [pscustomobject]@{ Id='r_foreglock'; Category='Rust'; Name='Instant Foreground Switching'; Recommended=$true
+   Desc='Sets ForegroundLockTimeout to 0 so alt-tabbing and focusing the game is instant, with no delay before it gets priority.'
+   Apply={ Set-Reg 'HKCU:\Control Panel\Desktop' 'ForegroundLockTimeout' 0 } }
+ [pscustomobject]@{ Id='r_search'; Category='Rust'; Name='Disable Windows Search Indexing'
+   Desc='Disables the WSearch indexing service, a common cause of random background CPU and disk spikes mid-game. Trade-off: Start menu file search becomes slower.'
+   Apply={ Set-ServiceState -Name 'WSearch' -Startup Disabled -Stop } }
+ [pscustomobject]@{ Id='r_memcomp'; Category='Rust'; Name='Disable Memory Compression (16GB+)'
+   Desc='Turns off RAM compression so the CPU is not spending cycles compressing/decompressing memory. Recommended only if you have 16GB or more RAM.'
+   Apply={ Disable-MMAgent -MemoryCompression -ErrorAction SilentlyContinue } }
+ [pscustomobject]@{ Id='r_diskidle'; Category='Rust'; Name='Never Sleep the Hard Disk'
+   Desc='Stops Windows spinning down / idling drives, which removes the hitch when a sleeping disk has to wake up.'
+   Apply={ powercfg -change disk-timeout-ac 0; powercfg -change disk-timeout-dc 0 } }
+ [pscustomobject]@{ Id='r_dyntick'; Category='Rust'; Name='Disable Dynamic Tick (smoother frametimes)'
+   Desc='Disables the dynamic kernel timer tick for a more consistent system clock and steadier frametimes. Reboot required. Fully reversible (bcdedit /set disabledynamictick yes).'
+   Apply={ & bcdedit /set disabledynamictick yes | Out-Null } }
+ [pscustomobject]@{ Id='r_mpo'; Category='Rust'; Name='Disable Multiplane Overlay (fix stutter/flicker)'
+   Desc='Disables MPO, a frequent cause of stutter, flicker and screen tearing on Windows 11. Tick this if you see those issues; reboot to apply.'
+   Apply={ Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' 'OverlayTestMode' 5 } }
+ [pscustomobject]@{ Id='r_fth'; Category='Rust'; Name='Disable Fault Tolerant Heap'
+   Desc='Disables the Fault Tolerant Heap, which can silently throttle a program after it has crashed once. Keeps the game running at full speed.'
+   Apply={ Set-Reg 'HKLM:\SOFTWARE\Microsoft\FTH' 'Enabled' 0 } }
 #endregion
 #region DEBLOAT
  [pscustomobject]@{ Id='db_apps'; Category='Debloat'; Name='Remove Bloatware Apps'; Recommended=$true
@@ -249,6 +304,38 @@ $Tweaks = @(
    Apply={ $od="$env:SystemRoot\SysWOW64\OneDriveSetup.exe"
            if (-not (Test-Path $od)) { $od="$env:SystemRoot\System32\OneDriveSetup.exe" }
            if (Test-Path $od) { Start-Process $od '/uninstall' -Wait } } }
+ [pscustomobject]@{ Id='db_teams'; Category='Debloat'; Name='Remove Teams / Chat'; Recommended=$true; ExplorerRestart=$true
+   Desc='Removes the preinstalled Microsoft Teams (personal) app and the taskbar Chat icon.'
+   Apply={ Get-AppxPackage -Name '*MicrosoftTeams*' -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+           Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Chat' 'ChatIcon' 3
+           Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarMn' 0 } }
+ [pscustomobject]@{ Id='db_phone'; Category='Debloat'; Name='Remove Phone Link'; Recommended=$true
+   Desc='Removes the Phone Link / Your Phone app and its background processes.'
+   Apply={ Get-AppxPackage -Name '*YourPhone*' -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue } }
+ [pscustomobject]@{ Id='db_cortana'; Category='Debloat'; Name='Remove Cortana App'; Recommended=$true
+   Desc='Uninstalls the Cortana app so it can no longer run in the background.'
+   Apply={ Get-AppxPackage -Name '*549981C3F5F10*' -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue } }
+ [pscustomobject]@{ Id='db_widgets'; Category='Debloat'; Name='Remove Widgets Platform'; Recommended=$true
+   Desc='Removes the Windows 11 Widgets / Web Experience component that powers the news-and-weather panel and its background service.'
+   Apply={ Get-AppxPackage -Name '*WebExperience*' -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+           Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests' 0 } }
+ [pscustomobject]@{ Id='db_recall'; Category='Debloat'; Name='Disable Windows Recall (24H2)'; Recommended=$true
+   Desc='Disables the Windows Recall feature that periodically screenshots your activity. No effect if your build does not have it.'
+   Apply={ Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' 1
+           Start-Process dism -ArgumentList '/online /disable-feature /featurename:Recall /norestart' -WindowStyle Hidden -ErrorAction SilentlyContinue } }
+ [pscustomobject]@{ Id='db_edge'; Category='Debloat'; Name='Tame Microsoft Edge'; Recommended=$true
+   Desc='Disables Edge startup boost, background running, the sidebar and the desktop search widget - without uninstalling Edge (which can break Windows Update).'
+   Apply={ $e='HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+           Set-Reg $e 'StartupBoostEnabled' 0
+           Set-Reg $e 'BackgroundModeEnabled' 0
+           Set-Reg $e 'HubsSidebarEnabled' 0
+           Set-Reg $e 'WebWidgetAllowed' 0 } }
+ [pscustomobject]@{ Id='db_delivery'; Category='Debloat'; Name='Disable Update P2P Sharing'; Recommended=$true
+   Desc='Stops Delivery Optimization from uploading Windows updates to other PCs over the internet, freeing your upload bandwidth.'
+   Apply={ Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 0 } }
+ [pscustomobject]@{ Id='db_reserved'; Category='Debloat'; Name='Disable Reserved Storage'
+   Desc='Frees up roughly 7GB that Windows reserves for updates. The next feature update may re-enable it.'
+   Apply={ Start-Process dism -ArgumentList '/online /set-reservedstoragestate /state:disabled' -WindowStyle Hidden -ErrorAction SilentlyContinue } }
 #endregion
 )
 
@@ -257,7 +344,7 @@ $Tweaks = @(
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
-        Title="Rom Opti" Height="840" Width="940" MinWidth="860" MinHeight="720"
+        Title="Rom Opti" Height="848" Width="952" MinWidth="868" MinHeight="724"
         WindowStyle="None" ResizeMode="CanResize" AllowsTransparency="False"
         WindowStartupLocation="CenterScreen"
         FontFamily="Segoe UI Variable Text, Segoe UI" TextOptions.TextFormattingMode="Ideal"
@@ -269,366 +356,248 @@ $Tweaks = @(
   </shell:WindowChrome.WindowChrome>
 
   <Window.Background>
-    <LinearGradientBrush StartPoint="0,0" EndPoint="0.4,1">
-      <GradientStop Color="#05060A" Offset="0"/>
-      <GradientStop Color="#0A0C12" Offset="0.5"/>
-      <GradientStop Color="#070810" Offset="1"/>
+    <LinearGradientBrush StartPoint="0,0" EndPoint="0.35,1">
+      <GradientStop Color="#030406" Offset="0"/>
+      <GradientStop Color="#06070C" Offset="0.5"/>
+      <GradientStop Color="#030308" Offset="1"/>
     </LinearGradientBrush>
   </Window.Background>
 
   <Window.Resources>
-    <!-- palette -->
-    <Color x:Key="cAccent">#54C7E0</Color>
-    <Color x:Key="cAccentHi">#7FE0F2</Color>
-    <SolidColorBrush x:Key="Accent"   Color="#54C7E0"/>
-    <SolidColorBrush x:Key="AccentHi" Color="#7FE0F2"/>
-    <SolidColorBrush x:Key="Gold"     Color="#E6B45C"/>
-    <SolidColorBrush x:Key="TextHi"   Color="#ECEEF2"/>
-    <SolidColorBrush x:Key="Text"     Color="#C2C7CF"/>
-    <SolidColorBrush x:Key="TextMut"  Color="#7A818B"/>
-    <SolidColorBrush x:Key="Hair"     Color="#1C1F27"/>
+    <Color x:Key="cAccent">#4FD6E8</Color>
+    <SolidColorBrush x:Key="Accent"   Color="#4FD6E8"/>
+    <SolidColorBrush x:Key="AccentHi" Color="#86ECF7"/>
+    <SolidColorBrush x:Key="Gold"     Color="#E9BC6A"/>
+    <SolidColorBrush x:Key="TextHi"   Color="#F1F3F6"/>
+    <SolidColorBrush x:Key="Text"     Color="#BBC1CA"/>
+    <SolidColorBrush x:Key="TextMut"  Color="#69707A"/>
+    <SolidColorBrush x:Key="Hair"     Color="#14161C"/>
 
-    <!-- ===== minimal scrollbar ===== -->
+    <!-- scrollbar -->
     <Style x:Key="SbPage" TargetType="RepeatButton">
       <Setter Property="Focusable" Value="False"/>
-      <Setter Property="Template">
-        <Setter.Value><ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate></Setter.Value>
-      </Setter>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RepeatButton"><Border Background="Transparent"/></ControlTemplate></Setter.Value></Setter>
     </Style>
     <Style x:Key="SbThumb" TargetType="Thumb">
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Thumb">
-            <Border x:Name="t" CornerRadius="3" Background="#2B303B" Margin="2,1"/>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="t" Property="Background" Value="#3C4350"/></Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="Thumb">
+          <Border x:Name="t" CornerRadius="3" Background="#252A33" Margin="2,1"/>
+          <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="t" Property="Background" Value="#39404D"/></Trigger></ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
     </Style>
     <Style TargetType="ScrollBar">
-      <Setter Property="Width" Value="10"/>
-      <Setter Property="Background" Value="Transparent"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ScrollBar">
-            <Grid Background="Transparent">
-              <Track x:Name="PART_Track" IsDirectionReversed="True">
-                <Track.Thumb><Thumb Style="{StaticResource SbThumb}"/></Track.Thumb>
-                <Track.IncreaseRepeatButton><RepeatButton Style="{StaticResource SbPage}" Command="ScrollBar.PageDownCommand"/></Track.IncreaseRepeatButton>
-                <Track.DecreaseRepeatButton><RepeatButton Style="{StaticResource SbPage}" Command="ScrollBar.PageUpCommand"/></Track.DecreaseRepeatButton>
-              </Track>
-            </Grid>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
+      <Setter Property="Width" Value="10"/><Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="ScrollBar">
+          <Grid Background="Transparent">
+            <Track x:Name="PART_Track" IsDirectionReversed="True">
+              <Track.Thumb><Thumb Style="{StaticResource SbThumb}"/></Track.Thumb>
+              <Track.IncreaseRepeatButton><RepeatButton Style="{StaticResource SbPage}" Command="ScrollBar.PageDownCommand"/></Track.IncreaseRepeatButton>
+              <Track.DecreaseRepeatButton><RepeatButton Style="{StaticResource SbPage}" Command="ScrollBar.PageUpCommand"/></Track.DecreaseRepeatButton>
+            </Track>
+          </Grid>
+        </ControlTemplate></Setter.Value></Setter>
     </Style>
 
-    <!-- ===== standard button (animated) ===== -->
+    <!-- standard button -->
     <Style x:Key="Btn" TargetType="Button">
       <Setter Property="Foreground" Value="{StaticResource TextHi}"/>
-      <Setter Property="FontSize" Value="12.5"/>
-      <Setter Property="FontWeight" Value="SemiBold"/>
-      <Setter Property="Padding" Value="16,9"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="bd" CornerRadius="8" Padding="{TemplateBinding Padding}"
-                    BorderThickness="1" RenderTransformOrigin="0.5,0.5">
-              <Border.Background><SolidColorBrush x:Name="bg" Color="#171A21"/></Border.Background>
-              <Border.BorderBrush><SolidColorBrush x:Name="br" Color="#23272F"/></Border.BorderBrush>
-              <Border.RenderTransform>
-                <TransformGroup>
-                  <ScaleTransform x:Name="sc" ScaleX="1" ScaleY="1"/>
-                  <TranslateTransform x:Name="tt" Y="0"/>
-                </TransformGroup>
-              </Border.RenderTransform>
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <EventTrigger RoutedEvent="MouseEnter">
-                <BeginStoryboard><Storyboard>
-                  <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#222732" Duration="0:0:0.14"/>
-                  <ColorAnimation Storyboard.TargetName="br" Storyboard.TargetProperty="Color" To="#3A4250" Duration="0:0:0.14"/>
-                  <DoubleAnimation Storyboard.TargetName="tt" Storyboard.TargetProperty="Y" To="-1.5" Duration="0:0:0.14"/>
-                </Storyboard></BeginStoryboard>
-              </EventTrigger>
-              <EventTrigger RoutedEvent="MouseLeave">
-                <BeginStoryboard><Storyboard>
-                  <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#171A21" Duration="0:0:0.18"/>
-                  <ColorAnimation Storyboard.TargetName="br" Storyboard.TargetProperty="Color" To="#23272F" Duration="0:0:0.18"/>
-                  <DoubleAnimation Storyboard.TargetName="tt" Storyboard.TargetProperty="Y" To="0" Duration="0:0:0.18"/>
-                </Storyboard></BeginStoryboard>
-              </EventTrigger>
-              <EventTrigger RoutedEvent="PreviewMouseLeftButtonDown">
-                <BeginStoryboard><Storyboard>
-                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" To="0.96" Duration="0:0:0.07"/>
-                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" To="0.96" Duration="0:0:0.07"/>
-                </Storyboard></BeginStoryboard>
-              </EventTrigger>
-              <EventTrigger RoutedEvent="PreviewMouseLeftButtonUp">
-                <BeginStoryboard><Storyboard>
-                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.12"/>
-                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.12"/>
-                </Storyboard></BeginStoryboard>
-              </EventTrigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
+      <Setter Property="FontSize" Value="12.5"/><Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Padding" Value="16,9"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Border x:Name="bd" CornerRadius="8" Padding="{TemplateBinding Padding}" BorderThickness="1" RenderTransformOrigin="0.5,0.5">
+            <Border.Background><SolidColorBrush x:Name="bg" Color="#13151B"/></Border.Background>
+            <Border.BorderBrush><SolidColorBrush x:Name="br" Color="#20242D"/></Border.BorderBrush>
+            <Border.RenderTransform><TransformGroup><ScaleTransform x:Name="sc"/><TranslateTransform x:Name="tt"/></TransformGroup></Border.RenderTransform>
+            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard>
+              <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#1E222B" Duration="0:0:0.14"/>
+              <ColorAnimation Storyboard.TargetName="br" Storyboard.TargetProperty="Color" To="#3A434F" Duration="0:0:0.14"/>
+              <DoubleAnimation Storyboard.TargetName="tt" Storyboard.TargetProperty="Y" To="-1.5" Duration="0:0:0.14"/>
+            </Storyboard></BeginStoryboard></EventTrigger>
+            <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard>
+              <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#13151B" Duration="0:0:0.18"/>
+              <ColorAnimation Storyboard.TargetName="br" Storyboard.TargetProperty="Color" To="#20242D" Duration="0:0:0.18"/>
+              <DoubleAnimation Storyboard.TargetName="tt" Storyboard.TargetProperty="Y" To="0" Duration="0:0:0.18"/>
+            </Storyboard></BeginStoryboard></EventTrigger>
+            <EventTrigger RoutedEvent="PreviewMouseLeftButtonDown"><BeginStoryboard><Storyboard>
+              <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" To="0.96" Duration="0:0:0.07"/>
+              <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" To="0.96" Duration="0:0:0.07"/>
+            </Storyboard></BeginStoryboard></EventTrigger>
+            <EventTrigger RoutedEvent="PreviewMouseLeftButtonUp"><BeginStoryboard><Storyboard>
+              <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.12"/>
+              <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.12"/>
+            </Storyboard></BeginStoryboard></EventTrigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
     </Style>
 
-    <!-- ===== primary button (accent + glow) ===== -->
+    <!-- primary button -->
     <Style x:Key="Primary" TargetType="Button">
-      <Setter Property="Foreground" Value="#04141A"/>
-      <Setter Property="FontSize" Value="12.5"/>
-      <Setter Property="FontWeight" Value="Bold"/>
-      <Setter Property="Padding" Value="18,9"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="bd" CornerRadius="8" Padding="{TemplateBinding Padding}" RenderTransformOrigin="0.5,0.5">
-              <Border.Background><SolidColorBrush x:Name="bg" Color="#54C7E0"/></Border.Background>
-              <Border.Effect><DropShadowEffect x:Name="gl" Color="#54C7E0" BlurRadius="0" ShadowDepth="0" Opacity="0"/></Border.Effect>
-              <Border.RenderTransform>
-                <TransformGroup><ScaleTransform x:Name="sc" ScaleX="1" ScaleY="1"/><TranslateTransform x:Name="tt" Y="0"/></TransformGroup>
-              </Border.RenderTransform>
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <EventTrigger RoutedEvent="MouseEnter">
-                <BeginStoryboard><Storyboard>
-                  <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#7FE0F2" Duration="0:0:0.14"/>
-                  <DoubleAnimation Storyboard.TargetName="gl" Storyboard.TargetProperty="BlurRadius" To="20" Duration="0:0:0.18"/>
-                  <DoubleAnimation Storyboard.TargetName="gl" Storyboard.TargetProperty="Opacity" To="0.55" Duration="0:0:0.18"/>
-                  <DoubleAnimation Storyboard.TargetName="tt" Storyboard.TargetProperty="Y" To="-1.5" Duration="0:0:0.14"/>
-                </Storyboard></BeginStoryboard>
-              </EventTrigger>
-              <EventTrigger RoutedEvent="MouseLeave">
-                <BeginStoryboard><Storyboard>
-                  <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#54C7E0" Duration="0:0:0.18"/>
-                  <DoubleAnimation Storyboard.TargetName="gl" Storyboard.TargetProperty="BlurRadius" To="0" Duration="0:0:0.2"/>
-                  <DoubleAnimation Storyboard.TargetName="gl" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.2"/>
-                  <DoubleAnimation Storyboard.TargetName="tt" Storyboard.TargetProperty="Y" To="0" Duration="0:0:0.18"/>
-                </Storyboard></BeginStoryboard>
-              </EventTrigger>
-              <EventTrigger RoutedEvent="PreviewMouseLeftButtonDown">
-                <BeginStoryboard><Storyboard>
-                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" To="0.96" Duration="0:0:0.07"/>
-                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" To="0.96" Duration="0:0:0.07"/>
-                </Storyboard></BeginStoryboard>
-              </EventTrigger>
-              <EventTrigger RoutedEvent="PreviewMouseLeftButtonUp">
-                <BeginStoryboard><Storyboard>
-                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.12"/>
-                  <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.12"/>
-                </Storyboard></BeginStoryboard>
-              </EventTrigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
+      <Setter Property="Foreground" Value="#04161B"/><Setter Property="FontSize" Value="12.5"/><Setter Property="FontWeight" Value="Bold"/>
+      <Setter Property="Padding" Value="18,9"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Border x:Name="bd" CornerRadius="8" Padding="{TemplateBinding Padding}" RenderTransformOrigin="0.5,0.5">
+            <Border.Background><SolidColorBrush x:Name="bg" Color="#4FD6E8"/></Border.Background>
+            <Border.Effect><DropShadowEffect x:Name="gl" Color="#4FD6E8" BlurRadius="0" ShadowDepth="0" Opacity="0"/></Border.Effect>
+            <Border.RenderTransform><TransformGroup><ScaleTransform x:Name="sc"/><TranslateTransform x:Name="tt"/></TransformGroup></Border.RenderTransform>
+            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard>
+              <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#86ECF7" Duration="0:0:0.14"/>
+              <DoubleAnimation Storyboard.TargetName="gl" Storyboard.TargetProperty="BlurRadius" To="22" Duration="0:0:0.18"/>
+              <DoubleAnimation Storyboard.TargetName="gl" Storyboard.TargetProperty="Opacity" To="0.6" Duration="0:0:0.18"/>
+              <DoubleAnimation Storyboard.TargetName="tt" Storyboard.TargetProperty="Y" To="-1.5" Duration="0:0:0.14"/>
+            </Storyboard></BeginStoryboard></EventTrigger>
+            <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard>
+              <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#4FD6E8" Duration="0:0:0.18"/>
+              <DoubleAnimation Storyboard.TargetName="gl" Storyboard.TargetProperty="BlurRadius" To="0" Duration="0:0:0.2"/>
+              <DoubleAnimation Storyboard.TargetName="gl" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.2"/>
+              <DoubleAnimation Storyboard.TargetName="tt" Storyboard.TargetProperty="Y" To="0" Duration="0:0:0.18"/>
+            </Storyboard></BeginStoryboard></EventTrigger>
+            <EventTrigger RoutedEvent="PreviewMouseLeftButtonDown"><BeginStoryboard><Storyboard>
+              <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" To="0.96" Duration="0:0:0.07"/>
+              <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" To="0.96" Duration="0:0:0.07"/>
+            </Storyboard></BeginStoryboard></EventTrigger>
+            <EventTrigger RoutedEvent="PreviewMouseLeftButtonUp"><BeginStoryboard><Storyboard>
+              <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.12"/>
+              <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.12"/>
+            </Storyboard></BeginStoryboard></EventTrigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
     </Style>
 
-    <!-- ===== window caption buttons ===== -->
+    <!-- caption buttons -->
     <Style x:Key="Cap" TargetType="Button">
       <Setter Property="Width" Value="44"/><Setter Property="Height" Value="42"/>
-      <Setter Property="Foreground" Value="#9097A1"/>
-      <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/><Setter Property="FontSize" Value="10"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="b"><Border.Background><SolidColorBrush x:Name="bg" Color="#00000000"/></Border.Background>
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
-            <ControlTemplate.Triggers>
-              <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard>
-                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#1E222B" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></EventTrigger>
-              <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard>
-                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.16"/></Storyboard></BeginStoryboard></EventTrigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
+      <Setter Property="Foreground" Value="#8E949E"/><Setter Property="FontFamily" Value="Segoe MDL2 Assets"/><Setter Property="FontSize" Value="10"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Border x:Name="b"><Border.Background><SolidColorBrush x:Name="bg" Color="#00000000"/></Border.Background><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+          <ControlTemplate.Triggers>
+            <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard><ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#1C2029" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></EventTrigger>
+            <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard><ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.16"/></Storyboard></BeginStoryboard></EventTrigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
     </Style>
     <Style x:Key="CapClose" TargetType="Button" BasedOn="{StaticResource Cap}">
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="b"><Border.Background><SolidColorBrush x:Name="bg" Color="#00000000"/></Border.Background>
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
-            <ControlTemplate.Triggers>
-              <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard>
-                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#E13D3D" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></EventTrigger>
-              <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard>
-                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.16"/></Storyboard></BeginStoryboard></EventTrigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Border x:Name="b"><Border.Background><SolidColorBrush x:Name="bg" Color="#00000000"/></Border.Background><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+          <ControlTemplate.Triggers>
+            <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard><ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#E23B3B" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></EventTrigger>
+            <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard><ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.16"/></Storyboard></BeginStoryboard></EventTrigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
     </Style>
 
-    <!-- ===== nav item (RadioButton) ===== -->
+    <!-- nav -->
     <Style x:Key="Nav" TargetType="RadioButton">
-      <Setter Property="Height" Value="44"/>
-      <Setter Property="Foreground" Value="{StaticResource TextMut}"/>
-      <Setter Property="FontSize" Value="13.5"/><Setter Property="FontWeight" Value="SemiBold"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Margin" Value="12,2,12,2"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="RadioButton">
-            <Border x:Name="bd" CornerRadius="9" Padding="16,0">
-              <Border.Background><SolidColorBrush x:Name="bg" Color="#00000000"/></Border.Background>
-              <Grid>
-                <Border x:Name="stripe" Width="3" Height="18" CornerRadius="2" HorizontalAlignment="Left"
-                        Background="{StaticResource Accent}" Opacity="0" RenderTransformOrigin="0.5,0.5">
-                  <Border.RenderTransform><ScaleTransform x:Name="ss" ScaleY="0.3"/></Border.RenderTransform>
-                </Border>
-                <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Left" Margin="14,0,0,0"/>
-              </Grid>
-            </Border>
-            <ControlTemplate.Triggers>
-              <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard>
-                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#15181F" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></EventTrigger>
-              <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard>
-                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.16"/></Storyboard></BeginStoryboard></EventTrigger>
-              <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="bd" Property="Background"><Setter.Value><SolidColorBrush Color="#16202A"/></Setter.Value></Setter>
-                <Setter Property="Foreground" Value="{StaticResource TextHi}"/>
-                <Trigger.EnterActions>
-                  <BeginStoryboard><Storyboard>
-                    <DoubleAnimation Storyboard.TargetName="stripe" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.2"/>
-                    <DoubleAnimation Storyboard.TargetName="ss" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.26">
-                      <DoubleAnimation.EasingFunction><BackEase Amplitude="0.6" EasingMode="EaseOut"/></DoubleAnimation.EasingFunction>
-                    </DoubleAnimation>
-                  </Storyboard></BeginStoryboard>
-                </Trigger.EnterActions>
-                <Trigger.ExitActions>
-                  <BeginStoryboard><Storyboard>
-                    <DoubleAnimation Storyboard.TargetName="stripe" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.14"/>
-                    <DoubleAnimation Storyboard.TargetName="ss" Storyboard.TargetProperty="ScaleY" To="0.3" Duration="0:0:0.14"/>
-                  </Storyboard></BeginStoryboard>
-                </Trigger.ExitActions>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
+      <Setter Property="Height" Value="44"/><Setter Property="Foreground" Value="{StaticResource TextMut}"/>
+      <Setter Property="FontSize" Value="13.5"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Margin" Value="12,2,12,2"/>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="RadioButton">
+          <Border x:Name="bd" CornerRadius="9" Padding="16,0"><Border.Background><SolidColorBrush x:Name="bg" Color="#00000000"/></Border.Background>
+            <Grid>
+              <Border x:Name="stripe" Width="3" Height="18" CornerRadius="2" HorizontalAlignment="Left" Background="{StaticResource Accent}" Opacity="0" RenderTransformOrigin="0.5,0.5">
+                <Border.RenderTransform><ScaleTransform x:Name="ss" ScaleY="0.3"/></Border.RenderTransform></Border>
+              <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Left" Margin="14,0,0,0"/>
+            </Grid>
+          </Border>
+          <ControlTemplate.Triggers>
+            <EventTrigger RoutedEvent="MouseEnter"><BeginStoryboard><Storyboard><ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#12151C" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></EventTrigger>
+            <EventTrigger RoutedEvent="MouseLeave"><BeginStoryboard><Storyboard><ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.16"/></Storyboard></BeginStoryboard></EventTrigger>
+            <Trigger Property="IsChecked" Value="True">
+              <Setter TargetName="bd" Property="Background"><Setter.Value><SolidColorBrush Color="#121C24"/></Setter.Value></Setter>
+              <Setter Property="Foreground" Value="{StaticResource TextHi}"/>
+              <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                <DoubleAnimation Storyboard.TargetName="stripe" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.2"/>
+                <DoubleAnimation Storyboard.TargetName="ss" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.28"><DoubleAnimation.EasingFunction><BackEase Amplitude="0.6" EasingMode="EaseOut"/></DoubleAnimation.EasingFunction></DoubleAnimation>
+              </Storyboard></BeginStoryboard></Trigger.EnterActions>
+              <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                <DoubleAnimation Storyboard.TargetName="stripe" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.14"/>
+                <DoubleAnimation Storyboard.TargetName="ss" Storyboard.TargetProperty="ScaleY" To="0.3" Duration="0:0:0.14"/>
+              </Storyboard></BeginStoryboard></Trigger.ExitActions>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
     </Style>
 
-    <!-- ===== modern checkbox ===== -->
+    <!-- checkbox -->
     <Style TargetType="CheckBox">
-      <Setter Property="Foreground" Value="{StaticResource Text}"/>
-      <Setter Property="FontSize" Value="13"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="CheckBox">
-            <StackPanel Orientation="Horizontal" Background="Transparent">
-              <Border x:Name="box" Width="19" Height="19" CornerRadius="5" BorderThickness="1.6" VerticalAlignment="Center"
-                      RenderTransformOrigin="0.5,0.5">
-                <Border.Background><SolidColorBrush x:Name="bg" Color="#00000000"/></Border.Background>
-                <Border.BorderBrush><SolidColorBrush x:Name="br" Color="#3A4150"/></Border.BorderBrush>
-                <Border.RenderTransform><ScaleTransform x:Name="sc" ScaleX="1" ScaleY="1"/></Border.RenderTransform>
-                <Path x:Name="chk" Stretch="Uniform" Margin="3.5" Opacity="0"
-                      Stroke="#04141A" StrokeThickness="2.4" StrokeEndLineCap="Round" StrokeStartLineCap="Round"
-                      Data="M 2,9 L 7,14 L 16,3"/>
-              </Border>
-              <ContentPresenter x:Name="lbl" VerticalAlignment="Center" Margin="11,0,0,0" RecognizesAccessKey="True"/>
-            </StackPanel>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter Property="Foreground" Value="{StaticResource TextHi}"/>
-              </Trigger>
-              <Trigger Property="IsChecked" Value="True">
-                <Trigger.EnterActions>
-                  <BeginStoryboard><Storyboard>
-                    <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#54C7E0" Duration="0:0:0.16"/>
-                    <ColorAnimation Storyboard.TargetName="br" Storyboard.TargetProperty="Color" To="#54C7E0" Duration="0:0:0.16"/>
-                    <DoubleAnimation Storyboard.TargetName="chk" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.14"/>
-                    <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" From="0.7" To="1" Duration="0:0:0.22">
-                      <DoubleAnimation.EasingFunction><BackEase Amplitude="0.7" EasingMode="EaseOut"/></DoubleAnimation.EasingFunction></DoubleAnimation>
-                    <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" From="0.7" To="1" Duration="0:0:0.22">
-                      <DoubleAnimation.EasingFunction><BackEase Amplitude="0.7" EasingMode="EaseOut"/></DoubleAnimation.EasingFunction></DoubleAnimation>
-                  </Storyboard></BeginStoryboard>
-                </Trigger.EnterActions>
-                <Trigger.ExitActions>
-                  <BeginStoryboard><Storyboard>
-                    <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.14"/>
-                    <ColorAnimation Storyboard.TargetName="br" Storyboard.TargetProperty="Color" To="#3A4150" Duration="0:0:0.14"/>
-                    <DoubleAnimation Storyboard.TargetName="chk" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.1"/>
-                  </Storyboard></BeginStoryboard>
-                </Trigger.ExitActions>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
+      <Setter Property="Foreground" Value="{StaticResource Text}"/><Setter Property="FontSize" Value="13"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="CheckBox">
+          <StackPanel Orientation="Horizontal" Background="Transparent">
+            <Border x:Name="box" Width="19" Height="19" CornerRadius="5" BorderThickness="1.6" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5">
+              <Border.Background><SolidColorBrush x:Name="bg" Color="#00000000"/></Border.Background>
+              <Border.BorderBrush><SolidColorBrush x:Name="br" Color="#343B45"/></Border.BorderBrush>
+              <Border.RenderTransform><ScaleTransform x:Name="sc"/></Border.RenderTransform>
+              <Path x:Name="chk" Stretch="Uniform" Margin="3.5" Opacity="0" Stroke="#04161B" StrokeThickness="2.4" StrokeEndLineCap="Round" StrokeStartLineCap="Round" Data="M 2,9 L 7,14 L 16,3"/>
+            </Border>
+            <ContentPresenter VerticalAlignment="Center" Margin="11,0,0,0" RecognizesAccessKey="True"/>
+          </StackPanel>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{StaticResource TextHi}"/></Trigger>
+            <Trigger Property="IsChecked" Value="True">
+              <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#4FD6E8" Duration="0:0:0.16"/>
+                <ColorAnimation Storyboard.TargetName="br" Storyboard.TargetProperty="Color" To="#4FD6E8" Duration="0:0:0.16"/>
+                <DoubleAnimation Storyboard.TargetName="chk" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.14"/>
+                <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleX" From="0.7" To="1" Duration="0:0:0.22"><DoubleAnimation.EasingFunction><BackEase Amplitude="0.7" EasingMode="EaseOut"/></DoubleAnimation.EasingFunction></DoubleAnimation>
+                <DoubleAnimation Storyboard.TargetName="sc" Storyboard.TargetProperty="ScaleY" From="0.7" To="1" Duration="0:0:0.22"><DoubleAnimation.EasingFunction><BackEase Amplitude="0.7" EasingMode="EaseOut"/></DoubleAnimation.EasingFunction></DoubleAnimation>
+              </Storyboard></BeginStoryboard></Trigger.EnterActions>
+              <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                <ColorAnimation Storyboard.TargetName="bg" Storyboard.TargetProperty="Color" To="#00000000" Duration="0:0:0.14"/>
+                <ColorAnimation Storyboard.TargetName="br" Storyboard.TargetProperty="Color" To="#343B45" Duration="0:0:0.14"/>
+                <DoubleAnimation Storyboard.TargetName="chk" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.1"/>
+              </Storyboard></BeginStoryboard></Trigger.ExitActions>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
     </Style>
 
-    <!-- ===== help badge (?) ===== -->
+    <!-- help badge (with hover scale animation) -->
     <Style x:Key="Help" TargetType="Border">
-      <Setter Property="Width" Value="17"/><Setter Property="Height" Value="17"/>
-      <Setter Property="CornerRadius" Value="9"/><Setter Property="Margin" Value="9,0,0,0"/>
+      <Setter Property="Width" Value="17"/><Setter Property="Height" Value="17"/><Setter Property="CornerRadius" Value="9"/><Setter Property="Margin" Value="9,0,0,0"/>
       <Setter Property="VerticalAlignment" Value="Center"/><Setter Property="Cursor" Value="Help"/>
-      <Setter Property="Background"><Setter.Value><SolidColorBrush Color="#1B1F27"/></Setter.Value></Setter>
-      <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="BorderBrush"><Setter.Value><SolidColorBrush Color="#2C323D"/></Setter.Value></Setter>
+      <Setter Property="Background"><Setter.Value><SolidColorBrush Color="#14161C"/></Setter.Value></Setter>
+      <Setter Property="BorderThickness" Value="1"/><Setter Property="BorderBrush"><Setter.Value><SolidColorBrush Color="#262B33"/></Setter.Value></Setter>
     </Style>
 
     <!-- tooltip -->
     <Style TargetType="ToolTip">
-      <Setter Property="Background" Value="#05070B"/>
-      <Setter Property="Foreground" Value="#D7DCE3"/>
-      <Setter Property="BorderBrush" Value="#54C7E0"/>
-      <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="12,10"/>
-      <Setter Property="MaxWidth" Value="370"/>
-      <Setter Property="FontSize" Value="12.5"/>
-      <Setter Property="HasDropShadow" Value="True"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ToolTip">
-            <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}">
-              <Border.Effect><DropShadowEffect Color="#000000" BlurRadius="18" ShadowDepth="3" Opacity="0.5"/></Border.Effect>
-              <ContentPresenter/>
-            </Border>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
+      <Setter Property="Background" Value="#04060A"/><Setter Property="Foreground" Value="#D7DCE3"/><Setter Property="BorderBrush" Value="#4FD6E8"/>
+      <Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="12,10"/><Setter Property="MaxWidth" Value="380"/><Setter Property="FontSize" Value="12.5"/><Setter Property="HasDropShadow" Value="True"/>
+      <Setter Property="Template"><Setter.Value>
+        <ControlTemplate TargetType="ToolTip">
+          <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}">
+            <Border.Effect><DropShadowEffect Color="#000000" BlurRadius="20" ShadowDepth="3" Opacity="0.55"/></Border.Effect>
+            <ContentPresenter/>
+          </Border></ControlTemplate></Setter.Value></Setter>
     </Style>
 
-    <Style x:Key="H1" TargetType="TextBlock">
-      <Setter Property="Foreground" Value="{StaticResource TextHi}"/><Setter Property="FontSize" Value="23"/><Setter Property="FontWeight" Value="Bold"/>
-    </Style>
-    <Style x:Key="P" TargetType="TextBlock">
-      <Setter Property="Foreground" Value="{StaticResource TextMut}"/><Setter Property="FontSize" Value="13"/>
-      <Setter Property="TextWrapping" Value="Wrap"/><Setter Property="LineHeight" Value="20"/>
-    </Style>
+    <Style x:Key="H1" TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource TextHi}"/><Setter Property="FontSize" Value="23"/><Setter Property="FontWeight" Value="Bold"/></Style>
+    <Style x:Key="P" TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource TextMut}"/><Setter Property="FontSize" Value="13"/><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="LineHeight" Value="20"/></Style>
   </Window.Resources>
 
-  <!-- ROOT -->
   <Grid>
     <Canvas Name="SkyCanvas" IsHitTestVisible="False"/>
 
-    <Grid>
-      <Grid.RowDefinitions>
-        <RowDefinition Height="42"/>
-        <RowDefinition Height="*"/>
-      </Grid.RowDefinitions>
+    <Grid Name="AppRoot">
+      <Grid.RowDefinitions><RowDefinition Height="42"/><RowDefinition Height="*"/></Grid.RowDefinitions>
 
-      <!-- TITLE BAR -->
       <Grid Grid.Row="0" Background="Transparent">
         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0,0,0">
-          <Ellipse Width="9" Height="9" Fill="{StaticResource Accent}" Margin="0,0,9,0"/>
+          <Ellipse Name="dotAccent" Width="9" Height="9" Fill="{StaticResource Accent}" Margin="0,0,9,0"/>
           <TextBlock Text="ROM OPTI" Foreground="{StaticResource TextHi}" FontWeight="Bold" FontSize="13"/>
-          <TextBlock Text="optimizer" Foreground="#5A616B" FontSize="11.5" Margin="8,1,0,0"/>
+          <TextBlock Text="optimizer" Foreground="#565D67" FontSize="11.5" Margin="8,1,0,0"/>
         </StackPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal">
           <Button Name="btnMin"   Style="{StaticResource Cap}"      shell:WindowChrome.IsHitTestVisibleInChrome="True" Content="&#xE921;"/>
@@ -637,12 +606,10 @@ $Tweaks = @(
         </StackPanel>
       </Grid>
 
-      <!-- BODY -->
       <Grid Grid.Row="1">
         <Grid.ColumnDefinitions><ColumnDefinition Width="216"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
 
-        <!-- SIDEBAR -->
-        <Border Grid.Column="0" Background="#F00C0E13" BorderBrush="{StaticResource Hair}" BorderThickness="0,0,1,0">
+        <Border Grid.Column="0" Background="#F2060709" BorderBrush="{StaticResource Hair}" BorderThickness="0,0,1,0">
           <DockPanel LastChildFill="False">
             <StackPanel DockPanel.Dock="Top" Margin="0,16,0,8">
               <RadioButton Name="navHome"    Style="{StaticResource Nav}" GroupName="nav" Content="Home"/>
@@ -652,91 +619,66 @@ $Tweaks = @(
               <RadioButton Name="navDebloat" Style="{StaticResource Nav}" GroupName="nav" Content="Debloat"/>
               <RadioButton Name="navAbout"   Style="{StaticResource Nav}" GroupName="nav" Content="About"/>
             </StackPanel>
-            <TextBlock DockPanel.Dock="Bottom" Margin="24,0,18,18" FontSize="10.5" Foreground="#454C55"
-                       TextWrapping="Wrap" Text="v1.0  •  reversible via System Restore"/>
+            <TextBlock DockPanel.Dock="Bottom" Margin="24,0,18,18" FontSize="10.5" Foreground="#3F454D" TextWrapping="Wrap" Text="v1.1  •  reversible via System Restore"/>
           </DockPanel>
         </Border>
 
-        <!-- CONTENT -->
         <Grid Grid.Column="1" Margin="20,14,20,16">
           <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
 
           <Grid Grid.Row="0" Name="PageHost">
-            <Border Name="pgHome" CornerRadius="14" Padding="36" Visibility="Visible"
-                    Background="#F70F1118" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+            <Border Name="pgHome" CornerRadius="14" Padding="36" Visibility="Visible" Background="#F20A0B10" BorderBrush="{StaticResource Hair}" BorderThickness="1">
               <StackPanel>
                 <TextBlock Style="{StaticResource H1}" Text="Welcome to Rom Opti"/>
-                <TextBlock Style="{StaticResource P}" Margin="0,12,0,0"
-                  Text="A clean, one-click Windows optimizer and Rust FPS tuner. Pick a category on the left, hover the ? on any option to see exactly what it does, then hit Apply. Start with the Recommended preset for a safe, balanced setup."/>
+                <TextBlock Style="{StaticResource P}" Margin="0,12,0,0" Text="A clean, one-click Windows optimizer and Rust FPS tuner. Pick a category on the left, hover the ? on any option to see exactly what it does, then hit Apply. Start with the Recommended preset - it makes a restore point first, then ticks a safe, high-impact set."/>
                 <StackPanel Orientation="Horizontal" Margin="0,28,0,0">
                   <Button Name="homeRecommend" Style="{StaticResource Primary}" Content="Apply Recommended Preset"/>
                   <Button Name="homeRust" Style="{StaticResource Btn}" Content="Open Rust FPS Tweaks" Margin="12,0,0,0"/>
                 </StackPanel>
-                <Border Margin="0,30,0,0" CornerRadius="11" Padding="20" Background="#12141B" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+                <Border Margin="0,30,0,0" CornerRadius="11" Padding="20" Background="#0C0D12" BorderBrush="{StaticResource Hair}" BorderThickness="1">
                   <StackPanel>
                     <TextBlock Foreground="{StaticResource Gold}" FontWeight="SemiBold" FontSize="13" Text="How it works"/>
-                    <TextBlock Style="{StaticResource P}" Margin="0,8,0,0"
-                      Text="Preferences — dark mode, taskbar, Explorer and quality-of-life toggles.&#10;Tweaks — privacy, telemetry and the classic system cleanups.&#10;Rust FPS — power, GPU scheduling, latency and aim tuning for maximum frames.&#10;Debloat — remove unused preinstalled apps and background tasks.&#10;&#10;Leave 'Create Restore Point' ticked so you can always roll back."/>
+                    <TextBlock Style="{StaticResource P}" Margin="0,8,0,0" Text="Preferences — dark mode, taskbar, Explorer and quality-of-life toggles.&#10;Tweaks — privacy, telemetry and the classic system cleanups.&#10;Rust FPS — power, GPU scheduling, latency and aim tuning for maximum frames.&#10;Debloat — remove unused preinstalled apps and background tasks.&#10;&#10;Use the Restore Point button any time, and reboot after applying for full effect."/>
                   </StackPanel>
                 </Border>
               </StackPanel>
             </Border>
 
-            <Border Name="pgPref" CornerRadius="14" Padding="6" Visibility="Collapsed" Background="#F70F1118" BorderBrush="{StaticResource Hair}" BorderThickness="1">
-              <DockPanel>
-                <TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Preferences" Margin="26,20,0,2"/>
-                <TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="26,0,26,10" Text="Appearance and quality-of-life toggles."/>
-                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="26,4,18,16"><StackPanel Name="spPreferences"/></ScrollViewer>
-              </DockPanel>
+            <Border Name="pgPref" CornerRadius="14" Padding="6" Visibility="Collapsed" Background="#F20A0B10" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+              <DockPanel><TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Preferences" Margin="26,20,0,2"/><TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="26,0,26,10" Text="Appearance and quality-of-life toggles."/><ScrollViewer VerticalScrollBarVisibility="Auto" Padding="26,4,18,16"><StackPanel Name="spPreferences"/></ScrollViewer></DockPanel>
             </Border>
-            <Border Name="pgTweaks" CornerRadius="14" Padding="6" Visibility="Collapsed" Background="#F70F1118" BorderBrush="{StaticResource Hair}" BorderThickness="1">
-              <DockPanel>
-                <TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Tweaks" Margin="26,20,0,2"/>
-                <TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="26,0,26,10" Text="Privacy, telemetry and classic system cleanups."/>
-                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="26,4,18,16"><StackPanel Name="spTweaks"/></ScrollViewer>
-              </DockPanel>
+            <Border Name="pgTweaks" CornerRadius="14" Padding="6" Visibility="Collapsed" Background="#F20A0B10" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+              <DockPanel><TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Tweaks" Margin="26,20,0,2"/><TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="26,0,26,10" Text="Privacy, telemetry and classic system cleanups."/><ScrollViewer VerticalScrollBarVisibility="Auto" Padding="26,4,18,16"><StackPanel Name="spTweaks"/></ScrollViewer></DockPanel>
             </Border>
-            <Border Name="pgRust" CornerRadius="14" Padding="6" Visibility="Collapsed" Background="#F70F1118" BorderBrush="{StaticResource Hair}" BorderThickness="1">
-              <DockPanel>
-                <TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Rust FPS" Margin="26,20,0,2"/>
-                <TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="26,0,26,10" Text="Squeeze maximum frames and minimum latency out of Rust."/>
-                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="26,4,18,16"><StackPanel Name="spRust"/></ScrollViewer>
-              </DockPanel>
+            <Border Name="pgRust" CornerRadius="14" Padding="6" Visibility="Collapsed" Background="#F20A0B10" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+              <DockPanel><TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Rust FPS" Margin="26,20,0,2"/><TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="26,0,26,10" Text="Squeeze maximum frames and minimum latency out of Rust. Hover each ? for what it does and any trade-offs."/><ScrollViewer VerticalScrollBarVisibility="Auto" Padding="26,4,18,16"><StackPanel Name="spRust"/></ScrollViewer></DockPanel>
             </Border>
-            <Border Name="pgDebloat" CornerRadius="14" Padding="6" Visibility="Collapsed" Background="#F70F1118" BorderBrush="{StaticResource Hair}" BorderThickness="1">
-              <DockPanel>
-                <TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Debloat" Margin="26,20,0,2"/>
-                <TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="26,0,26,10" Text="Remove unused preinstalled apps and background tasks."/>
-                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="26,4,18,16"><StackPanel Name="spDebloat"/></ScrollViewer>
-              </DockPanel>
+            <Border Name="pgDebloat" CornerRadius="14" Padding="6" Visibility="Collapsed" Background="#F20A0B10" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+              <DockPanel><TextBlock DockPanel.Dock="Top" Style="{StaticResource H1}" Text="Debloat" Margin="26,20,0,2"/><TextBlock DockPanel.Dock="Top" Style="{StaticResource P}" Margin="26,0,26,10" Text="Remove unused preinstalled apps and background tasks."/><ScrollViewer VerticalScrollBarVisibility="Auto" Padding="26,4,18,16"><StackPanel Name="spDebloat"/></ScrollViewer></DockPanel>
             </Border>
-            <Border Name="pgAbout" CornerRadius="14" Padding="36" Visibility="Collapsed" Background="#F70F1118" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+            <Border Name="pgAbout" CornerRadius="14" Padding="36" Visibility="Collapsed" Background="#F20A0B10" BorderBrush="{StaticResource Hair}" BorderThickness="1">
               <StackPanel>
                 <TextBlock Style="{StaticResource H1}" Text="About Rom Opti"/>
-                <TextBlock Style="{StaticResource P}" Margin="0,12,0,0"
-                  Text="Rom Opti is a lightweight, single-file Windows utility for gamers. It applies well-known, documented registry and service tweaks - the same kinds used by popular open-source optimizers - wrapped in a clean interface with plain-English explanations on every option."/>
+                <TextBlock Style="{StaticResource P}" Margin="0,12,0,0" Text="Rom Opti is a lightweight, single-file Windows utility for gamers. It applies well-known, documented registry and service tweaks - the same kinds used by popular open-source optimizers - wrapped in a clean interface with plain-English explanations on every option."/>
                 <TextBlock Foreground="{StaticResource Gold}" FontWeight="SemiBold" Margin="0,24,0,0" Text="Safety"/>
-                <TextBlock Style="{StaticResource P}" Margin="0,8,0,0"
-                  Text="Nothing here is destructive, but system tweaks always carry some risk. Keep 'Create Restore Point' ticked, and if anything feels off you can roll back from Windows System Restore. A reboot is recommended after applying."/>
+                <TextBlock Style="{StaticResource P}" Margin="0,8,0,0" Text="Nothing here is destructive, but system tweaks always carry some risk. Make a restore point (the button is always there, and Recommended makes one automatically), and if anything feels off you can roll back from Windows System Restore. A reboot is recommended after applying."/>
                 <TextBlock Foreground="{StaticResource Gold}" FontWeight="SemiBold" Margin="0,24,0,0" Text="Tip"/>
-                <TextBlock Style="{StaticResource P}" Margin="0,8,0,0"
-                  Text="Watch the sky - most meteors burn cyan, but every so often a golden one drifts past."/>
+                <TextBlock Style="{StaticResource P}" Margin="0,8,0,0" Text="Watch the sky - most meteors burn cyan, but every so often a golden one drifts past."/>
               </StackPanel>
             </Border>
           </Grid>
 
-          <!-- ACTION BAR -->
-          <Border Grid.Row="1" Margin="0,14,0,0" CornerRadius="13" Padding="14,11" Background="#F00B0D13" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+          <Border Grid.Row="1" Margin="0,14,0,0" CornerRadius="13" Padding="14,11" Background="#F2060709" BorderBrush="{StaticResource Hair}" BorderThickness="1">
             <StackPanel Orientation="Horizontal">
-              <Button Name="btnRecommend" Style="{StaticResource Btn}" Content="Recommended"/>
+              <Button Name="btnRestore"   Style="{StaticResource Btn}" Content="+ Restore Point"/>
+              <Button Name="btnRecommend" Style="{StaticResource Btn}" Content="Recommended" Margin="9,0,0,0"/>
               <Button Name="btnAll"  Style="{StaticResource Btn}" Content="Select All" Margin="9,0,0,0"/>
               <Button Name="btnNone" Style="{StaticResource Btn}" Content="Clear All"  Margin="9,0,0,0"/>
               <Button Name="btnApply" Style="{StaticResource Primary}" Content="APPLY SELECTED" Margin="9,0,0,0"/>
             </StackPanel>
           </Border>
 
-          <!-- LOG -->
-          <Border Grid.Row="2" Margin="0,11,0,0" Height="120" CornerRadius="13" Padding="6" Background="#F0070810" BorderBrush="{StaticResource Hair}" BorderThickness="1">
+          <Border Grid.Row="2" Margin="0,11,0,0" Height="120" CornerRadius="13" Padding="6" Background="#F203040A" BorderBrush="{StaticResource Hair}" BorderThickness="1">
             <ScrollViewer Name="logScroll" VerticalScrollBarVisibility="Auto" Padding="14,8"><ItemsControl Name="lstLog"/></ScrollViewer>
           </Border>
         </Grid>
@@ -747,166 +689,114 @@ $Tweaks = @(
 '@
 
 # ---- 6. LOAD + WIRE --------------------------------------------------------
-try {
-    $reader = New-Object System.Xml.XmlNodeReader $xaml
-    $window = [Windows.Markup.XamlReader]::Load($reader)
-} catch {
-    [System.Windows.MessageBox]::Show("UI failed to load:`n$($_.Exception.Message)","Rom Opti") | Out-Null
-    exit
-}
+try { $reader=New-Object System.Xml.XmlNodeReader $xaml; $window=[Windows.Markup.XamlReader]::Load($reader) }
+catch { [System.Windows.MessageBox]::Show("UI failed to load:`n$($_.Exception.Message)","Rom Opti") | Out-Null; exit }
 
-$SkyCanvas = $window.FindName('SkyCanvas')
-$lstLog    = $window.FindName('lstLog')
-$logScroll = $window.FindName('logScroll')
+$SkyCanvas=$window.FindName('SkyCanvas'); $lstLog=$window.FindName('lstLog'); $logScroll=$window.FindName('logScroll')
+$AppRoot=$window.FindName('AppRoot'); $dotAccent=$window.FindName('dotAccent')
 
-function B($hex) { New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString($hex)) }
-$c_ok=B '#62E08C'; $c_err=B '#F2706F'; $c_warn=B '#E6B45C'; $c_info=B '#828A94'; $c_accent=B '#54C7E0'
+function B($hex){ New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString($hex)) }
+$c_ok=B '#62E08C'; $c_err=B '#F2706F'; $c_warn=B '#E9BC6A'; $c_info=B '#7E858F'; $c_accent=B '#4FD6E8'
+function Dur($ms){ New-Object Windows.Duration ([TimeSpan]::FromMilliseconds($ms)) }
+function EaseOut { $e=New-Object Windows.Media.Animation.CubicEase; $e.EasingMode='EaseOut'; $e }
 
-function Write-Log {
-    param([string]$msg, [string]$kind='info')
-    $tb = New-Object Windows.Controls.TextBlock
-    $tb.Text=$msg; $tb.TextWrapping='Wrap'; $tb.FontSize=12; $tb.Margin='0,1.5,0,1.5'; $tb.FontFamily='Cascadia Mono, Consolas'
-    $tb.Foreground = switch ($kind) { 'ok'{$c_ok} 'err'{$c_err} 'warn'{$c_warn} 'accent'{$c_accent} default{$c_info} }
-    $tb.Opacity=0
-    $lstLog.Items.Add($tb) | Out-Null
-    $fade = New-Object Windows.Media.Animation.DoubleAnimation 0,1,(New-Object Windows.Duration ([TimeSpan]::FromMilliseconds(260)))
-    $tb.BeginAnimation([Windows.UIElement]::OpacityProperty,$fade)
+function Write-Log { param([string]$msg,[string]$kind='info')
+    $tb=New-Object Windows.Controls.TextBlock; $tb.Text=$msg; $tb.TextWrapping='Wrap'; $tb.FontSize=12; $tb.Margin='0,1.5,0,1.5'; $tb.FontFamily='Cascadia Mono, Consolas'
+    $tb.Foreground = switch($kind){'ok'{$c_ok}'err'{$c_err}'warn'{$c_warn}'accent'{$c_accent}default{$c_info}}
+    $tb.Opacity=0; $lstLog.Items.Add($tb) | Out-Null
+    $tb.BeginAnimation([Windows.UIElement]::OpacityProperty,(New-Object Windows.Media.Animation.DoubleAnimation 0,1,(Dur 260)))
     $logScroll.ScrollToEnd()
 }
-function DoEvents {
-    $frame = New-Object System.Windows.Threading.DispatcherFrame
-    $null = $window.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Background, [action]{ $frame.Continue=$false })
-    [System.Windows.Threading.Dispatcher]::PushFrame($frame)
-}
+function DoEvents { $f=New-Object System.Windows.Threading.DispatcherFrame
+    $null=$window.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Background,[action]{$f.Continue=$false}); [System.Windows.Threading.Dispatcher]::PushFrame($f) }
 
-# ---- METEOR SHOWER (parallax layers + fade + twinkle + rare gold) ----------
-function New-Meteor {
-    param($w, $h, $layer)   # layer 1=far 2=mid 3=near
-    $isGold = ($script:rng.NextDouble() -lt 0.10)
+# ---- METEORS (bigger + denser, parallax) -----------------------------------
+function New-Meteor { param($w,$h,$layer)
+    $isGold=($script:rng.NextDouble() -lt 0.10)
     switch ($layer) {
-        1 { $lmin=30;$lmax=70;  $thk=1.1; $base=0.34; $dmin=22;$dmax=34 }
-        2 { $lmin=55;$lmax=105; $thk=1.7; $base=0.62; $dmin=15;$dmax=25 }
-        default { $lmin=85;$lmax=150;$thk=2.4; $base=0.92; $dmin=11;$dmax=19 }
+        1 { $lmin=45;$lmax=92;  $thk=1.5; $base=0.45; $dmin=22;$dmax=34 }
+        2 { $lmin=78;$lmax=140; $thk=2.3; $base=0.76; $dmin=15;$dmax=25 }
+        default { $lmin=115;$lmax=200;$thk=3.2; $base=1.0; $dmin=11;$dmax=19 }
     }
-    $len = if ($isGold) { [int]($lmax*1.25) } else { $script:rng.Next($lmin,$lmax) }
-    if ($isGold) { $thk += 0.7; $base = [Math]::Min(1.0,$base+0.1) }
-    $angle = 26 + $script:rng.Next(-4,5)
-    $rad = $angle * [Math]::PI / 180
-
-    $m = New-Object Windows.Controls.Canvas
-    $m.Width=$len; $m.Height=$thk
-
-    $rect = New-Object Windows.Shapes.Rectangle
-    $rect.Width=$len; $rect.Height=$thk; $rect.RadiusX=$thk/2; $rect.RadiusY=$thk/2
-    $grad = New-Object Windows.Media.LinearGradientBrush
-    $grad.StartPoint='0,0.5'; $grad.EndPoint='1,0.5'
-    if ($isGold) {
+    $len = if ($isGold){ [int]($lmax*1.3) } else { $script:rng.Next($lmin,$lmax) }
+    if ($isGold){ $thk+=0.9; $base=[Math]::Min(1.0,$base+0.12) }
+    $angle=26+$script:rng.Next(-4,5); $rad=$angle*[Math]::PI/180
+    $m=New-Object Windows.Controls.Canvas; $m.Width=$len; $m.Height=$thk
+    $rect=New-Object Windows.Shapes.Rectangle; $rect.Width=$len; $rect.Height=$thk; $rect.RadiusX=$thk/2; $rect.RadiusY=$thk/2
+    $grad=New-Object Windows.Media.LinearGradientBrush; $grad.StartPoint='0,0.5'; $grad.EndPoint='1,0.5'
+    if ($isGold){
         $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(0,255,196,90),0.0)))
-        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(110,255,202,108),0.7)))
-        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(255,255,236,176),1.0)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(120,255,202,108),0.7)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(255,255,238,182),1.0)))
     } else {
-        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(0,120,210,240),0.0)))
-        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(105,150,225,248),0.72)))
-        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(245,228,250,255),1.0)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(0,120,212,242),0.0)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(115,150,228,250),0.72)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(250,230,251,255),1.0)))
     }
-    $rect.Fill=$grad
-    [Windows.Controls.Canvas]::SetLeft($rect,0); [Windows.Controls.Canvas]::SetTop($rect,0)
-    $m.Children.Add($rect) | Out-Null
-
-    $head = New-Object Windows.Shapes.Ellipse
-    $hr = if ($isGold) { 3.6 } else { ($thk*0.9)+1.1 }
-    $head.Width=$hr*2; $head.Height=$hr*2
-    $head.Fill = if ($isGold) { B '#FFF1CC' } else { B '#E9FAFF' }
-    if ($isGold -or $layer -eq 3) {
-        $glow = New-Object Windows.Media.Effects.DropShadowEffect
-        $glow.Color = if ($isGold) { [Windows.Media.Color]::FromRgb(255,196,92) } else { [Windows.Media.Color]::FromRgb(120,220,240) }
-        $glow.BlurRadius = if ($isGold) { 16 } else { 9 }; $glow.ShadowDepth=0; $glow.Opacity=0.9
-        $head.Effect=$glow
+    $rect.Fill=$grad; [Windows.Controls.Canvas]::SetLeft($rect,0); [Windows.Controls.Canvas]::SetTop($rect,0); $m.Children.Add($rect) | Out-Null
+    $head=New-Object Windows.Shapes.Ellipse; $hr= if ($isGold){4.2} else { ($thk*0.95)+1.2 }
+    $head.Width=$hr*2; $head.Height=$hr*2; $head.Fill= if ($isGold){ B '#FFF1CC' } else { B '#EAFBFF' }
+    if ($isGold -or $layer -ge 2){
+        $glow=New-Object Windows.Media.Effects.DropShadowEffect
+        $glow.Color= if ($isGold){ [Windows.Media.Color]::FromRgb(255,196,92) } else { [Windows.Media.Color]::FromRgb(120,222,242) }
+        $glow.BlurRadius= if ($isGold){18} else {11}; $glow.ShadowDepth=0; $glow.Opacity=0.95; $head.Effect=$glow
     }
-    [Windows.Controls.Canvas]::SetLeft($head, $len-$hr); [Windows.Controls.Canvas]::SetTop($head, ($thk/2)-$hr)
-    $m.Children.Add($head) | Out-Null
-
-    $rot = New-Object Windows.Media.RotateTransform ($angle,0,0)
-    $tt  = New-Object Windows.Media.TranslateTransform
-    $tg  = New-Object Windows.Media.TransformGroup
-    $tg.Children.Add($rot); $tg.Children.Add($tt)
-    $m.RenderTransform=$tg
-
-    $dist=$h+$len+300
-    $startX=$script:rng.Next(-340,[int]$w)
-    $startY=-1*$script:rng.Next(60,420)
-    $endX=$startX+$dist*[Math]::Cos($rad)
-    $endY=$startY+$dist*[Math]::Sin($rad)
-    $dur  = if ($isGold) { $script:rng.Next(($dmax+8),($dmax+20))/10 } else { $script:rng.Next($dmin,$dmax)/10 }
-    $delay= $script:rng.Next(0,90)/10
-    $durObj = New-Object Windows.Duration ([TimeSpan]::FromSeconds($dur))
-    $beg = [TimeSpan]::FromSeconds($delay)
-
+    [Windows.Controls.Canvas]::SetLeft($head,$len-$hr); [Windows.Controls.Canvas]::SetTop($head,($thk/2)-$hr); $m.Children.Add($head) | Out-Null
+    $rot=New-Object Windows.Media.RotateTransform ($angle,0,0); $tt=New-Object Windows.Media.TranslateTransform
+    $tg=New-Object Windows.Media.TransformGroup; $tg.Children.Add($rot); $tg.Children.Add($tt); $m.RenderTransform=$tg
+    $dist=$h+$len+320; $startX=$script:rng.Next(-360,[int]$w); $startY=-1*$script:rng.Next(60,440)
+    $endX=$startX+$dist*[Math]::Cos($rad); $endY=$startY+$dist*[Math]::Sin($rad)
+    $dur = if ($isGold){ $script:rng.Next(($dmax+8),($dmax+22))/10 } else { $script:rng.Next($dmin,$dmax)/10 }
+    $delay=$script:rng.Next(0,95)/10; $durObj=New-Object Windows.Duration ([TimeSpan]::FromSeconds($dur)); $beg=[TimeSpan]::FromSeconds($delay)
     $ax=New-Object Windows.Media.Animation.DoubleAnimation; $ax.From=$startX; $ax.To=$endX; $ax.Duration=$durObj; $ax.BeginTime=$beg; $ax.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
     $ay=New-Object Windows.Media.Animation.DoubleAnimation; $ay.From=$startY; $ay.To=$endY; $ay.Duration=$durObj; $ay.BeginTime=$beg; $ay.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
-    $tt.BeginAnimation([Windows.Media.TranslateTransform]::XProperty,$ax)
-    $tt.BeginAnimation([Windows.Media.TranslateTransform]::YProperty,$ay)
-
-    # fade in/out so trails never pop
-    $op=New-Object Windows.Media.Animation.DoubleAnimationUsingKeyFrames
-    $op.Duration=$durObj; $op.BeginTime=$beg; $op.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
+    $tt.BeginAnimation([Windows.Media.TranslateTransform]::XProperty,$ax); $tt.BeginAnimation([Windows.Media.TranslateTransform]::YProperty,$ay)
+    $op=New-Object Windows.Media.Animation.DoubleAnimationUsingKeyFrames; $op.Duration=$durObj; $op.BeginTime=$beg; $op.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
     $op.KeyFrames.Add((New-Object Windows.Media.Animation.LinearDoubleKeyFrame(0.0,[Windows.Media.Animation.KeyTime]::FromPercent(0.0)))) | Out-Null
-    $op.KeyFrames.Add((New-Object Windows.Media.Animation.LinearDoubleKeyFrame($base,[Windows.Media.Animation.KeyTime]::FromPercent(0.14)))) | Out-Null
-    $op.KeyFrames.Add((New-Object Windows.Media.Animation.LinearDoubleKeyFrame($base,[Windows.Media.Animation.KeyTime]::FromPercent(0.74)))) | Out-Null
+    $op.KeyFrames.Add((New-Object Windows.Media.Animation.LinearDoubleKeyFrame($base,[Windows.Media.Animation.KeyTime]::FromPercent(0.13)))) | Out-Null
+    $op.KeyFrames.Add((New-Object Windows.Media.Animation.LinearDoubleKeyFrame($base,[Windows.Media.Animation.KeyTime]::FromPercent(0.76)))) | Out-Null
     $op.KeyFrames.Add((New-Object Windows.Media.Animation.LinearDoubleKeyFrame(0.0,[Windows.Media.Animation.KeyTime]::FromPercent(1.0)))) | Out-Null
-    $m.BeginAnimation([Windows.UIElement]::OpacityProperty,$op)
-    return $m
+    $m.BeginAnimation([Windows.UIElement]::OpacityProperty,$op); return $m
 }
-
-function New-Star {
-    param($w,$h)
-    $s=New-Object Windows.Shapes.Ellipse
-    $r=$script:rng.Next(4,13)/10
-    $s.Width=$r*2; $s.Height=$r*2; $s.Fill=B '#AFC9D8'
-    $baseOp=$script:rng.Next(7,40)/100
-    $s.Opacity=$baseOp
-    [Windows.Controls.Canvas]::SetLeft($s,$script:rng.Next(0,[int]$w))
-    [Windows.Controls.Canvas]::SetTop($s,$script:rng.Next(0,[int]$h))
-    if ($script:rng.NextDouble() -lt 0.34) {   # ~1/3 twinkle
-        $tw=New-Object Windows.Media.Animation.DoubleAnimation
-        $tw.From=$baseOp*0.3; $tw.To=[Math]::Min(0.85,$baseOp+0.3)
-        $tw.Duration=New-Object Windows.Duration ([TimeSpan]::FromSeconds($script:rng.Next(14,40)/10))
-        $tw.BeginTime=[TimeSpan]::FromSeconds($script:rng.Next(0,40)/10)
+function New-Star { param($w,$h)
+    $s=New-Object Windows.Shapes.Ellipse; $r=$script:rng.Next(4,14)/10; $s.Width=$r*2; $s.Height=$r*2; $s.Fill=B '#AEC8D7'
+    $baseOp=$script:rng.Next(7,42)/100; $s.Opacity=$baseOp
+    [Windows.Controls.Canvas]::SetLeft($s,$script:rng.Next(0,[int]$w)); [Windows.Controls.Canvas]::SetTop($s,$script:rng.Next(0,[int]$h))
+    if ($script:rng.NextDouble() -lt 0.4){
+        $tw=New-Object Windows.Media.Animation.DoubleAnimation; $tw.From=$baseOp*0.3; $tw.To=[Math]::Min(0.9,$baseOp+0.32)
+        $tw.Duration=New-Object Windows.Duration ([TimeSpan]::FromSeconds($script:rng.Next(14,42)/10)); $tw.BeginTime=[TimeSpan]::FromSeconds($script:rng.Next(0,45)/10)
         $tw.AutoReverse=$true; $tw.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
-        $ease=New-Object Windows.Media.Animation.SineEase; $ease.EasingMode='EaseInOut'; $tw.EasingFunction=$ease
-        $s.BeginAnimation([Windows.UIElement]::OpacityProperty,$tw)
+        $e=New-Object Windows.Media.Animation.SineEase; $e.EasingMode='EaseInOut'; $tw.EasingFunction=$e; $s.BeginAnimation([Windows.UIElement]::OpacityProperty,$tw)
     }
     return $s
 }
-
 function Build-Sky {
-    $w=$SkyCanvas.ActualWidth;  if ($w -lt 50){$w=940}
-    $h=$SkyCanvas.ActualHeight; if ($h -lt 50){$h=840}
+    $w=$SkyCanvas.ActualWidth; if ($w -lt 50){$w=952}; $h=$SkyCanvas.ActualHeight; if ($h -lt 50){$h=848}
     $SkyCanvas.Children.Clear()
-    for ($i=0;$i -lt 110;$i++){ $SkyCanvas.Children.Add((New-Star -w $w -h $h)) | Out-Null }
-    $layerCounts = [ordered]@{ 1=11; 2=10; 3=8 }   # far / mid / near
-    foreach ($layer in $layerCounts.Keys) {
-        for ($i=0;$i -lt $layerCounts[$layer];$i++){ $SkyCanvas.Children.Add((New-Meteor -w $w -h $h -layer ([int]$layer))) | Out-Null }
-    }
+    for ($i=0;$i -lt 130;$i++){ $SkyCanvas.Children.Add((New-Star -w $w -h $h)) | Out-Null }
+    $layerCounts=[ordered]@{ 1=16; 2=14; 3=11 }
+    foreach ($layer in $layerCounts.Keys){ for ($i=0;$i -lt $layerCounts[$layer];$i++){ $SkyCanvas.Children.Add((New-Meteor -w $w -h $h -layer ([int]$layer))) | Out-Null } }
 }
 
-# ---- CHECKBOX LISTS --------------------------------------------------------
+# ---- CHECKBOX ROWS (with hover-highlight animation) ------------------------
 $panels=@{ Preferences=$window.FindName('spPreferences'); Tweaks=$window.FindName('spTweaks'); Rust=$window.FindName('spRust'); Debloat=$window.FindName('spDebloat') }
-$helpStyle=$window.TryFindResource('Help')
-$CheckBoxes=@{}
+$helpStyle=$window.TryFindResource('Help'); $CheckBoxes=@{}
 foreach ($t in $Tweaks) {
-    $row=New-Object Windows.Controls.StackPanel; $row.Orientation='Horizontal'; $row.Margin='0,6,0,6'
+    $rowBg=New-Object Windows.Media.SolidColorBrush ([Windows.Media.Color]::FromArgb(0,40,52,68))
+    $row=New-Object Windows.Controls.Border; $row.Background=$rowBg; $row.CornerRadius=[Windows.CornerRadius]::new(7); $row.Padding='8,5'; $row.Margin='0,1,0,1'
+    $sp=New-Object Windows.Controls.StackPanel; $sp.Orientation='Horizontal'
     $cb=New-Object Windows.Controls.CheckBox; $cb.Content=$t.Name; $cb.VerticalAlignment='Center'
     if ($t.PSObject.Properties.Name -contains 'Default' -and $t.Default){ $cb.IsChecked=$true }
     $badge=New-Object Windows.Controls.Border; $badge.Style=$helpStyle; $badge.ToolTip=$t.Desc
-    $qm=New-Object Windows.Controls.TextBlock; $qm.Text='?'; $qm.FontSize=11; $qm.FontWeight='Bold'
-    $qm.Foreground=$c_accent; $qm.HorizontalAlignment='Center'; $qm.VerticalAlignment='Center'
-    $badge.Child=$qm
-    [Windows.Controls.ToolTipService]::SetInitialShowDelay($badge,140)
-    [Windows.Controls.ToolTipService]::SetShowDuration($badge,60000)
-    $row.AddChild($cb); $row.AddChild($badge)
-    $panels[$t.Category].AddChild($row)
-    $CheckBoxes[$t.Id]=$cb
+    $qm=New-Object Windows.Controls.TextBlock; $qm.Text='?'; $qm.FontSize=11; $qm.FontWeight='Bold'; $qm.Foreground=$c_accent; $qm.HorizontalAlignment='Center'; $qm.VerticalAlignment='Center'; $badge.Child=$qm
+    [Windows.Controls.ToolTipService]::SetInitialShowDelay($badge,130); [Windows.Controls.ToolTipService]::SetShowDuration($badge,60000)
+    $bsc=New-Object Windows.Media.ScaleTransform (1,1); $badge.RenderTransform=$bsc; $badge.RenderTransformOrigin=(New-Object Windows.Point(0.5,0.5))
+    $badge.Add_MouseEnter({ $be=New-Object Windows.Media.Animation.DoubleAnimation 1.28,(Dur 130); $bk=New-Object Windows.Media.Animation.BackEase; $bk.Amplitude=0.5; $bk.EasingMode='EaseOut'; $be.EasingFunction=$bk; $bsc.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty,$be); $bsc.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty,$be) }.GetNewClosure())
+    $badge.Add_MouseLeave({ $bl=New-Object Windows.Media.Animation.DoubleAnimation 1,(Dur 160); $bsc.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty,$bl); $bsc.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty,$bl) }.GetNewClosure())
+    $sp.AddChild($cb); $sp.AddChild($badge); $row.Child=$sp
+    $row.Add_MouseEnter({ $ca=New-Object Windows.Media.Animation.ColorAnimation; $ca.To=[Windows.Media.Color]::FromArgb(34,48,60,78); $ca.Duration=(Dur 130); $rowBg.BeginAnimation([Windows.Media.SolidColorBrush]::ColorProperty,$ca) }.GetNewClosure())
+    $row.Add_MouseLeave({ $ca=New-Object Windows.Media.Animation.ColorAnimation; $ca.To=[Windows.Media.Color]::FromArgb(0,40,52,68); $ca.Duration=(Dur 180); $rowBg.BeginAnimation([Windows.Media.SolidColorBrush]::ColorProperty,$ca) }.GetNewClosure())
+    $panels[$t.Category].AddChild($row); $CheckBoxes[$t.Id]=$cb
 }
 
 # ---- NAVIGATION (animated page transition) ---------------------------------
@@ -916,25 +806,31 @@ function Show-Page($name){
     foreach($k in $pages.Keys){ $pages[$k].Visibility='Collapsed' }
     $p=$pages[$name]; $p.Visibility='Visible'
     $tt=New-Object Windows.Media.TranslateTransform; $p.RenderTransform=$tt
-    $ease=New-Object Windows.Media.Animation.CubicEase; $ease.EasingMode='EaseOut'
-    $fade=New-Object Windows.Media.Animation.DoubleAnimation 0,1,(New-Object Windows.Duration ([TimeSpan]::FromMilliseconds(220))); $fade.EasingFunction=$ease
-    $slide=New-Object Windows.Media.Animation.DoubleAnimation 14,0,(New-Object Windows.Duration ([TimeSpan]::FromMilliseconds(280))); $slide.EasingFunction=$ease
-    $p.BeginAnimation([Windows.UIElement]::OpacityProperty,$fade)
-    $tt.BeginAnimation([Windows.Media.TranslateTransform]::YProperty,$slide)
+    $fade=New-Object Windows.Media.Animation.DoubleAnimation 0,1,(Dur 220); $fade.EasingFunction=(EaseOut)
+    $slide=New-Object Windows.Media.Animation.DoubleAnimation 14,0,(Dur 280); $slide.EasingFunction=(EaseOut)
+    $p.BeginAnimation([Windows.UIElement]::OpacityProperty,$fade); $tt.BeginAnimation([Windows.Media.TranslateTransform]::YProperty,$slide)
 }
-foreach ($k in @($navs.Keys)) { $n=$k; $navs[$n].Add_Checked({ Show-Page $n }.GetNewClosure()) }
+foreach ($k in @($navs.Keys)){ $n=$k; $navs[$n].Add_Checked({ Show-Page $n }.GetNewClosure()) }
 
 # ---- ACTIONS ---------------------------------------------------------------
+function New-RestorePoint {
+    Write-Log 'Creating system restore point...' 'accent'; DoEvents
+    try { & (($Tweaks | Where-Object { $_.Id -eq 'tw_restore' }).Apply); Write-Log '[ OK ] Restore point created.' 'ok' }
+    catch { Write-Log ('[warn] Restore point skipped: '+$_.Exception.Message) 'warn' }
+}
 function Set-Recommended {
     foreach ($t in $Tweaks){ $rec=($t.PSObject.Properties.Name -contains 'Recommended' -and $t.Recommended); $CheckBoxes[$t.Id].IsChecked=[bool]$rec }
-    Write-Log 'Recommended safe preset selected. Review, then APPLY.' 'accent'
+    Write-Log 'Recommended safe preset selected.' 'accent'
+    New-RestorePoint
+    Write-Log 'Review the ticks, then APPLY SELECTED.' 'accent'
 }
 function Invoke-Apply {
-    $btn=$window.FindName('btnApply'); $btn.IsEnabled=$false
-    $lstLog.Items.Clear()
-    Write-Log '=== Rom Opti :: applying selected optimizations ===' 'accent'
+    $btn=$window.FindName('btnApply'); $btn.IsEnabled=$false; $btn.Content='APPLYING...'
+    $pulse=New-Object Windows.Media.Animation.DoubleAnimation 1,0.55,(Dur 520); $pulse.AutoReverse=$true; $pulse.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
+    $btn.BeginAnimation([Windows.UIElement]::OpacityProperty,$pulse)
+    $lstLog.Items.Clear(); Write-Log '=== Rom Opti :: applying selected optimizations ===' 'accent'
     $sel=$Tweaks | Where-Object { $CheckBoxes[$_.Id].IsChecked }
-    if (-not $sel){ Write-Log 'Nothing selected. Tick some options first.' 'warn'; $btn.IsEnabled=$true; return }
+    if (-not $sel){ Write-Log 'Nothing selected. Tick some options first.' 'warn'; $btn.BeginAnimation([Windows.UIElement]::OpacityProperty,$null); $btn.Opacity=1; $btn.Content='APPLY SELECTED'; $btn.IsEnabled=$true; return }
     $sel=$sel | Sort-Object { if ($_.Id -eq 'tw_restore'){0}else{1} }
     $needExplorer=$false
     foreach ($t in $sel){
@@ -945,26 +841,43 @@ function Invoke-Apply {
     }
     if ($needExplorer){ Write-Log 'Restarting Explorer to apply interface changes...' 'accent'; DoEvents; Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue }
     Write-Log '=== Done. A reboot is recommended for full effect. ===' 'ok'
-    $btn.IsEnabled=$true
+    $btn.BeginAnimation([Windows.UIElement]::OpacityProperty,$null); $btn.Opacity=1; $btn.Content='APPLY SELECTED'; $btn.IsEnabled=$true
 }
+$window.FindName('btnRestore').Add_Click({ New-RestorePoint })
 $window.FindName('btnRecommend').Add_Click({ Set-Recommended })
 $window.FindName('btnAll').Add_Click({ foreach ($cb in $CheckBoxes.Values){ $cb.IsChecked=$true } })
 $window.FindName('btnNone').Add_Click({ foreach ($cb in $CheckBoxes.Values){ $cb.IsChecked=$false } })
 $window.FindName('btnApply').Add_Click({ Invoke-Apply })
 $window.FindName('homeRecommend').Add_Click({ Set-Recommended; $navs['Tweaks'].IsChecked=$true })
 $window.FindName('homeRust').Add_Click({ $navs['Rust'].IsChecked=$true })
-
-# ---- WINDOW CONTROLS -------------------------------------------------------
 $window.FindName('btnMin').Add_Click({ $window.WindowState='Minimized' })
 $window.FindName('btnMax').Add_Click({ if ($window.WindowState -eq 'Maximized'){ $window.WindowState='Normal' } else { $window.WindowState='Maximized' } })
 $window.FindName('btnClose').Add_Click({ $window.Close() })
 
-# ---- START -----------------------------------------------------------------
+# ---- START (entrance animations) -------------------------------------------
 $window.Add_Loaded({
     Build-Sky
+    # app entrance: fade + scale-in
+    $st=New-Object Windows.Media.ScaleTransform (0.985,0.985); $AppRoot.RenderTransformOrigin=(New-Object Windows.Point(0.5,0.5)); $AppRoot.RenderTransform=$st; $AppRoot.Opacity=0
+    $AppRoot.BeginAnimation([Windows.UIElement]::OpacityProperty,(New-Object Windows.Media.Animation.DoubleAnimation 0,1,(Dur 360)))
+    $sx=New-Object Windows.Media.Animation.DoubleAnimation 0.985,1,(Dur 430); $sx.EasingFunction=(EaseOut)
+    $sy=New-Object Windows.Media.Animation.DoubleAnimation 0.985,1,(Dur 430); $sy.EasingFunction=(EaseOut)
+    $st.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty,$sx); $st.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty,$sy)
+    # nav staggered slide-in
+    $i=0
+    foreach ($k in 'Home','Preferences','Tweaks','Rust','Debloat','About'){
+        $nb=$navs[$k]; $ntt=New-Object Windows.Media.TranslateTransform; $ntt.X=-22; $nb.RenderTransform=$ntt; $nb.Opacity=0
+        $bt=[TimeSpan]::FromMilliseconds(140+$i*55)
+        $nx=New-Object Windows.Media.Animation.DoubleAnimation -22,0,(Dur 240); $nx.BeginTime=$bt; $nx.EasingFunction=(EaseOut)
+        $no=New-Object Windows.Media.Animation.DoubleAnimation 0,1,(Dur 240); $no.BeginTime=$bt
+        $ntt.BeginAnimation([Windows.Media.TranslateTransform]::XProperty,$nx); $nb.BeginAnimation([Windows.UIElement]::OpacityProperty,$no); $i++
+    }
+    # accent dot breathing pulse
+    $dp=New-Object Windows.Media.Animation.DoubleAnimation 0.5,1,(New-Object Windows.Duration ([TimeSpan]::FromSeconds(1.6))); $dp.AutoReverse=$true; $dp.RepeatBehavior=[Windows.Media.Animation.RepeatBehavior]::Forever
+    $de=New-Object Windows.Media.Animation.SineEase; $de.EasingMode='EaseInOut'; $dp.EasingFunction=$de; $dotAccent.BeginAnimation([Windows.UIElement]::OpacityProperty,$dp)
     $navs['Home'].IsChecked=$true
-    Write-Log 'Welcome to Rom Opti. Click Recommended for a safe preset, or pick your own.' 'accent'
-    Write-Log 'Tip: leave "Create Restore Point" ticked so you can always roll back.' 'info'
+    Write-Log 'Welcome to Rom Opti. Click Recommended for a safe preset (it makes a restore point first).' 'accent'
+    Write-Log 'Or use the + Restore Point button any time before applying.' 'info'
 })
 $window.Add_SizeChanged({ if ($SkyCanvas.ActualWidth -gt 50){ Build-Sky } })
 
