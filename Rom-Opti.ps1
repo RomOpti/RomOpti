@@ -23,6 +23,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 # ---- 2. ASSEMBLIES ---------------------------------------------------------
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 $ErrorActionPreference = 'Stop'
+$script:rng = New-Object System.Random
 
 # ---- 3. HELPERS ------------------------------------------------------------
 function Set-Reg {
@@ -95,7 +96,7 @@ function Write-Log {
         ok     = '#4ADE80'
         warn   = '#FBBF24'
         err    = '#F87171'
-        accent = '#6366F1'
+        accent = '#22D3EE'
     }
     $item = New-Object Windows.Controls.TextBlock
     $item.Text = $Message
@@ -273,6 +274,58 @@ $Tweaks = @(
         Undo={ 'Fax','RetailDemo','MapsBroker','PcaSvc','WMPNetworkSvc','RemoteRegistry','WbioSrvc' |
                ForEach-Object { Set-ServiceState -Name $_ -Startup Automatic } }
     }
+    [pscustomobject]@{
+        Id='tw_startup'; Category='Tweaks'; Name='Disable Common Startup Apps'; Recommended=$true
+        Desc='Blocks heavy auto-start apps (Discord, Spotify, Steam, Epic, EA/Origin, GOG Galaxy, Teams, OneDrive, Adobe, and iCUE/Razer/Logitech/MSI/Corsair RGB software) from launching at boot. This is one of the biggest REAL gains: it cuts idle RAM use and background CPU spikes. Audio/GPU/antivirus drivers are never touched. Undo re-enables every entry.'
+        Check={
+            $appr='HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
+            if (-not (Test-Path $appr)) { return $false }
+            $targets=@('Discord','Spotify','Steam','EpicGamesLauncher','*Teams*','OneDrive','Adobe*','iCUE','*Razer*','*Logitech*','*Corsair*','*MSI*','GalaxyClient','EADM','*Origin*')
+            $names=(Get-Item $appr).Property
+            foreach ($n in $names) {
+                foreach ($t in $targets) {
+                    if ($n -like $t) {
+                        $blob=(Get-ItemProperty $appr -Name $n -ErrorAction SilentlyContinue).$n
+                        if ($blob -and $blob[0] -ge 3) { return $true }
+                    }
+                }
+            }
+            return $false
+        }
+        Apply={
+            $appr='HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
+            if (-not (Test-Path $appr)) { New-Item $appr -Force | Out-Null }
+            $runKeys=@('HKCU:\Software\Microsoft\Windows\CurrentVersion\Run',
+                       'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run')
+            $targets=@('Discord','Spotify','Steam','EpicGamesLauncher','*Teams*','OneDrive','Adobe*','iCUE',
+                       '*Razer*','*Logitech*','*Corsair*','*MSI*','*RGB*','GalaxyClient','EADM','*Origin*')
+            $disabled=[byte[]](3,0,0,0,0,0,0,0,0,0,0,0)
+            $count=0
+            foreach ($rk in $runKeys) {
+                if (-not (Test-Path $rk)) { continue }
+                foreach ($n in (Get-Item $rk).Property) {
+                    foreach ($t in $targets) {
+                        if ($n -like $t) {
+                            Set-ItemProperty -Path $appr -Name $n -Value $disabled -Type Binary -Force -ErrorAction SilentlyContinue
+                            $count++
+                            break
+                        }
+                    }
+                }
+            }
+            Write-Log "Disabled $count startup entry(s). Confirm in Task Manager > Startup apps." 'ok'
+        }
+        Undo={
+            $appr='HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
+            $enabled=[byte[]](2,0,0,0,0,0,0,0,0,0,0,0)
+            if (Test-Path $appr) {
+                foreach ($n in (Get-Item $appr).Property) {
+                    Set-ItemProperty -Path $appr -Name $n -Value $enabled -Type Binary -Force -ErrorAction SilentlyContinue
+                }
+            }
+            Write-Log 'Startup apps re-enabled.' 'warn'
+        }
+    }
 #endregion
 #region RUST FPS
     [pscustomobject]@{
@@ -439,6 +492,171 @@ $Tweaks = @(
         Apply={ '-high -maxMem=16384 -malloc=system -force-d3d11-no-singlethreaded -window-mode exclusive' | Set-Clipboard }
         Undo={ Write-Log 'Clipboard contents cannot be reverted.' 'warn' }
     }
+    [pscustomobject]@{
+        Id='r_procstate'; Category='Rust FPS'; Name='Lock CPU at 100% (Min/Max Processor State)'; Recommended=$true
+        Desc='Pins the minimum and maximum processor state to 100% so the CPU never down-clocks mid-fight. Improves frametime consistency and 1% lows. Raises idle temps/power slightly.'
+        Check={ (Get-PowerCfgAcValue 'SUB_PROCESSOR' 'PROCTHROTTLEMIN') -eq 100 -and (Get-PowerCfgAcValue 'SUB_PROCESSOR' 'PROCTHROTTLEMAX') -eq 100 }
+        Apply={ powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100 | Out-Null
+                powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100 | Out-Null
+                powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 | Out-Null
+                powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 | Out-Null
+                powercfg -setactive scheme_current | Out-Null }
+        Undo={ powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 5 | Out-Null
+               powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMIN 5 | Out-Null
+               powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 | Out-Null
+               powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 | Out-Null
+               powercfg -setactive scheme_current | Out-Null }
+    }
+    [pscustomobject]@{
+        Id='r_usbsuspend'; Category='Rust FPS'; Name='Disable USB Selective Suspend'; Recommended=$true
+        Desc='Stops Windows from power-cycling USB ports, which can cause mouse/keyboard micro-stutters and brief input dropouts. Lower, more consistent input latency.'
+        Check={ (Get-PowerCfgAcValue 'SUB_USB' '48e6b7a6-50f5-4782-a5d4-53bb8f07e226') -eq 0 }
+        Apply={ $g='48e6b7a6-50f5-4782-a5d4-53bb8f07e226'
+                powercfg -setacvalueindex scheme_current sub_usb $g 0 | Out-Null
+                powercfg -setdcvalueindex scheme_current sub_usb $g 0 | Out-Null
+                powercfg -setactive scheme_current | Out-Null }
+        Undo={ $g='48e6b7a6-50f5-4782-a5d4-53bb8f07e226'
+               powercfg -setacvalueindex scheme_current sub_usb $g 1 | Out-Null
+               powercfg -setdcvalueindex scheme_current sub_usb $g 1 | Out-Null
+               powercfg -setactive scheme_current | Out-Null }
+    }
+    [pscustomobject]@{
+        Id='r_diskoff'; Category='Rust FPS'; Name='Never Turn Off Disk'; Recommended=$true
+        Desc='Sets the hard-disk idle timeout to Never so the drive never spins down or sleeps, preventing hitching when a game streams new assets.'
+        Check={ (Get-PowerCfgAcValue 'SUB_DISK' '6738e2c4-e8a5-4a42-b16a-e040e769756e') -eq 0 }
+        Apply={ $g='6738e2c4-e8a5-4a42-b16a-e040e769756e'
+                powercfg -setacvalueindex scheme_current sub_disk $g 0 | Out-Null
+                powercfg -setdcvalueindex scheme_current sub_disk $g 0 | Out-Null
+                powercfg -setactive scheme_current | Out-Null }
+        Undo={ $g='6738e2c4-e8a5-4a42-b16a-e040e769756e'
+               powercfg -setacvalueindex scheme_current sub_disk $g 1200 | Out-Null
+               powercfg -setdcvalueindex scheme_current sub_disk $g 600 | Out-Null
+               powercfg -setactive scheme_current | Out-Null }
+    }
+    [pscustomobject]@{
+        Id='r_pcie'; Category='Rust FPS'; Name='Disable PCIe Link State Power Management'
+        Desc='Turns off ASPM so the PCIe link to your GPU/NVMe never enters a low-power state. Lowers latency on desktops. On laptops this increases battery drain.'
+        Check={ (Get-PowerCfgAcValue 'SUB_PCIEXPRESS' 'ee12f906-d277-404b-b6da-e5fa1a576df5') -eq 0 }
+        Apply={ $g='ee12f906-d277-404b-b6da-e5fa1a576df5'
+                powercfg -setacvalueindex scheme_current sub_pciexpress $g 0 | Out-Null
+                powercfg -setdcvalueindex scheme_current sub_pciexpress $g 0 | Out-Null
+                powercfg -setactive scheme_current | Out-Null }
+        Undo={ $g='ee12f906-d277-404b-b6da-e5fa1a576df5'
+               powercfg -setacvalueindex scheme_current sub_pciexpress $g 1 | Out-Null
+               powercfg -setdcvalueindex scheme_current sub_pciexpress $g 2 | Out-Null
+               powercfg -setactive scheme_current | Out-Null }
+    }
+    [pscustomobject]@{
+        Id='r_visualfx'; Category='Rust FPS'; Name='Visual Effects -> Best Performance'; Recommended=$true; ExplorerRestart=$true
+        Desc='Switches Windows to "Adjust for best performance" and kills taskbar/window animations. Frees a little GPU and CPU and makes the desktop snappier when alt-tabbing out of a game.'
+        Check={ (Get-RegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 0) -eq 2 }
+        Apply={ Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 2
+                Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarAnimations' 0
+                Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ListviewAlphaSelect' 0
+                Set-Reg 'HKCU:\Control Panel\Desktop' 'DragFullWindows' '0' 'String' }
+        Undo={ Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting' 0
+               Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarAnimations' 1
+               Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ListviewAlphaSelect' 1
+               Set-Reg 'HKCU:\Control Panel\Desktop' 'DragFullWindows' '1' 'String' }
+    }
+    [pscustomobject]@{
+        Id='r_bgapps'; Category='Rust FPS'; Name='Disable Background Apps'; Recommended=$true
+        Desc='Stops UWP/Store apps from running and updating in the background. Frees RAM and trims idle CPU/network so more headroom goes to the game.'
+        Check={ (Get-RegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications' 'GlobalUserDisabled' 0) -eq 1 }
+        Apply={ Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications' 'GlobalUserDisabled' 1
+                Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search' 'BackgroundAppGlobalToggle' 0
+                Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy' 'LetAppsRunInBackground' 2 }
+        Undo={ Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications' 'GlobalUserDisabled' 0
+               Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search' 'BackgroundAppGlobalToggle' 1
+               Remove-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy' 'LetAppsRunInBackground' }
+    }
+    [pscustomobject]@{
+        Id='r_prioritysep'; Category='Rust FPS'; Name='Foreground Priority Boost'; Recommended=$true
+        Desc='Sets Win32PrioritySeparation to favor the active window, giving the foreground game longer, higher-priority CPU time slices. Helps responsiveness and 1% lows.'
+        Check={ (Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 2) -eq 38 }
+        Apply={ Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 38 }
+        Undo={ Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 2 }
+    }
+    [pscustomobject]@{
+        Id='r_qos'; Category='Rust FPS'; Name='Remove QoS Reserved Bandwidth'; Recommended=$true
+        Desc='Removes the 20% of network bandwidth Windows reserves by default for QoS, freeing it for game traffic. Helps on busy or saturated connections.'
+        Check={ (Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit' 20) -eq 0 }
+        Apply={ Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit' 0 }
+        Undo={ Remove-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit' }
+    }
+    [pscustomobject]@{
+        Id='r_gamebar'; Category='Rust FPS'; Name='Disable Xbox Game Bar Overlay'; Recommended=$true
+        Desc='Disables the Game Bar overlay and its startup tip, removing recording/overlay overhead and frametime spikes from the in-game panel. Separate from Game DVR.'
+        Check={ (Get-RegValue 'HKCU:\Software\Microsoft\GameBar' 'UseNexusForGameBarEnabled' 1) -eq 0 -and
+                (Get-RegValue 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 1) -eq 0 }
+        Apply={ Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'UseNexusForGameBarEnabled' 0
+                Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'ShowStartupPanel' 0
+                Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'GamePanelStartupTipIndex' 3
+                Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 0 }
+        Undo={ Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'UseNexusForGameBarEnabled' 1
+               Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'ShowStartupPanel' 1
+               Remove-RegValue 'HKCU:\Software\Microsoft\GameBar' 'GamePanelStartupTipIndex'
+               Set-Reg 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled' 1 }
+    }
+    [pscustomobject]@{
+        Id='r_notif'; Category='Rust FPS'; Name='Disable Notifications & Toasts'; Recommended=$true
+        Desc='Turns off Windows toast notifications so nothing steals focus or causes a hitch mid-match. Reduces minor background work from the notification platform.'
+        Check={ (Get-RegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' 'ToastEnabled' 1) -eq 0 }
+        Apply={ Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' 'ToastEnabled' 0
+                Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings' 'NOC_GLOBAL_SETTING_TOASTS_ENABLED' 0 }
+        Undo={ Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' 'ToastEnabled' 1
+               Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings' 'NOC_GLOBAL_SETTING_TOASTS_ENABLED' 1 }
+    }
+    [pscustomobject]@{
+        Id='r_inputkeys'; Category='Rust FPS'; Name='Disable Sticky / Filter / Toggle Keys'; Recommended=$true
+        Desc='Disables the accessibility key shortcuts so mashing Shift or holding a key during a fight never pops a prompt or alters input. Pure input-consistency tweak.'
+        Check={ (Get-RegValue 'HKCU:\Control Panel\Accessibility\StickyKeys' 'Flags' '510') -eq '506' }
+        Apply={ Set-Reg 'HKCU:\Control Panel\Accessibility\StickyKeys' 'Flags' '506' 'String'
+                Set-Reg 'HKCU:\Control Panel\Accessibility\Keyboard Response' 'Flags' '122' 'String'
+                Set-Reg 'HKCU:\Control Panel\Accessibility\ToggleKeys' 'Flags' '38' 'String' }
+        Undo={ Set-Reg 'HKCU:\Control Panel\Accessibility\StickyKeys' 'Flags' '510' 'String'
+               Set-Reg 'HKCU:\Control Panel\Accessibility\Keyboard Response' 'Flags' '126' 'String'
+               Set-Reg 'HKCU:\Control Panel\Accessibility\ToggleKeys' 'Flags' '62' 'String' }
+    }
+    [pscustomobject]@{
+        Id='r_menudelay'; Category='Rust FPS'; Name='Zero Menu & Keyboard Delay'; Recommended=$true
+        Desc='Removes the menu-show delay and sets the fastest keyboard repeat delay for a snappier desktop and faster console/menu input. Takes effect at next sign-in.'
+        Check={ (Get-RegValue 'HKCU:\Control Panel\Desktop' 'MenuShowDelay' '400') -eq '0' }
+        Apply={ Set-Reg 'HKCU:\Control Panel\Desktop' 'MenuShowDelay' '0' 'String'
+                Set-Reg 'HKCU:\Control Panel\Keyboard' 'KeyboardDelay' '0' 'String' }
+        Undo={ Set-Reg 'HKCU:\Control Panel\Desktop' 'MenuShowDelay' '400' 'String'
+               Set-Reg 'HKCU:\Control Panel\Keyboard' 'KeyboardDelay' '1' 'String' }
+    }
+    [pscustomobject]@{
+        Id='r_indexing'; Category='Rust FPS'; Name='Disable Windows Search Indexing'
+        Desc='Stops the WSearch indexer, which periodically hammers the disk and CPU. Search still works but is slower to return file results. Best on SSD/NVMe.'
+        Check={ (Get-ServiceStartup 'WSearch') -eq 'Disabled' }
+        Apply={ Set-ServiceState -Name 'WSearch' -Startup Disabled -Stop }
+        Undo={ Set-ServiceState -Name 'WSearch' -Startup Automatic; Start-Service -Name 'WSearch' -ErrorAction SilentlyContinue }
+    }
+    [pscustomobject]@{
+        Id='r_memcomp'; Category='Rust FPS'; Name='Disable Memory Compression (16GB+ only)'
+        Desc='Turns off the memory-compression engine so the CPU stops spending cycles compressing RAM pages. Only sensible with 16GB+; on low-RAM systems it forces more disk paging and HURTS performance.'
+        Check={ try { -not (Get-MMAgent).MemoryCompression } catch { $false } }
+        Apply={ Disable-MMAgent -MemoryCompression -ErrorAction SilentlyContinue }
+        Undo={ Enable-MMAgent -MemoryCompression -ErrorAction SilentlyContinue }
+    }
+    [pscustomobject]@{
+        Id='r_tdr'; Category='Rust FPS'; Name='Raise GPU TDR Timeout'
+        Desc='Increases the time Windows waits before resetting a busy GPU driver (TdrDelay 2 -> 10s). Prevents false "display driver stopped responding" crashes and the stutter they cause under heavy load. Reboot required.'
+        Check={ (Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'TdrDelay' 2) -eq 10 }
+        Apply={ Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'TdrDelay' 10
+                Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'TdrDdiDelay' 10 }
+        Undo={ Remove-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'TdrDelay'
+               Remove-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'TdrDdiDelay' }
+    }
+    [pscustomobject]@{
+        Id='r_dyntick'; Category='Rust FPS'; Name='Disable Dynamic Tick'
+        Desc='Disables the dynamic kernel timer tick (bcdedit disabledynamictick yes). Can smooth frametimes on some systems and is neutral on others. Fully reversible. Does NOT touch HPET/platform clock, which can cause stutter if changed.'
+        Check={ $o = (bcdedit /enum '{current}' 2>$null | Out-String); $o -match 'disabledynamictick\s+Yes' }
+        Apply={ bcdedit /set disabledynamictick yes | Out-Null }
+        Undo={ bcdedit /deletevalue disabledynamictick | Out-Null }
+    }
 #endregion
 #region DEBLOAT
     [pscustomobject]@{
@@ -471,6 +689,147 @@ $Tweaks = @(
         Check={ (Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent' 'DisableWindowsConsumerFeatures' 0) -eq 1 }
         Apply={ Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent' 'DisableWindowsConsumerFeatures' 1 }
         Undo={ Remove-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent' 'DisableWindowsConsumerFeatures' }
+    }
+    [pscustomobject]@{
+        Id='db_bloatware'; Category='Debloat'; Name='Remove Bloatware Apps (Chris Titus-style)'
+        Desc='Removes a curated set of preinstalled Store apps: Bing Weather/News/Finance/Sports, 3D Viewer/Builder, Print3D, Mixed Reality, Maps, Solitaire, Office Hub, OneNote (UWP), Skype, Groove Music, Movies & TV, People, Feedback Hub, Get Help, Tips, Clipchamp, Power Automate, Quick Assist, Dev Home, new Outlook, To Do and Journal. Core apps (Store, Calculator, Photos, Snipping Tool, Terminal, Notepad, Paint, Defender, winget) are NOT touched. Shows a confirmation first. Not auto-reversible (reinstall from the Store).'
+        Check={ -not (Get-AppxPackage -Name 'Microsoft.BingWeather' -AllUsers -ErrorAction SilentlyContinue) -and
+                -not (Get-AppxPackage -Name 'Microsoft.MicrosoftSolitaireCollection' -AllUsers -ErrorAction SilentlyContinue) }
+        Apply={
+            $msg = "This permanently removes a curated set of preinstalled Microsoft Store apps:`n`n" +
+                   "Bing Weather/News/Finance/Sports, 3D Viewer/Builder, Print3D, Mixed Reality, Maps, Solitaire, Office Hub, OneNote (UWP), Skype, Groove Music, Movies & TV, People, Feedback Hub, Get Help, Tips, Clipchamp, Power Automate, Quick Assist, Dev Home, new Outlook, To Do, Journal.`n`n" +
+                   "NOT touched: Store, Calculator, Photos, Snipping Tool, Terminal, Notepad, Paint, Defender, winget. (Use the Xbox tweak for Xbox apps.)`n`n" +
+                   "Removed apps can be reinstalled later from the Microsoft Store, but this is NOT auto-reversible.`n`nContinue?"
+            $r = [System.Windows.MessageBox]::Show($msg,'Confirm Bloatware Removal',[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
+            if ($r -ne [System.Windows.MessageBoxResult]::Yes) { Write-Log 'Bloatware removal cancelled by user.' 'warn'; return }
+            $apps = @(
+                'Microsoft.BingWeather','Microsoft.BingNews','Microsoft.BingFinance','Microsoft.BingSports',
+                'Microsoft.3DBuilder','Microsoft.Microsoft3DViewer','Microsoft.Print3D','Microsoft.MixedReality.Portal',
+                'Microsoft.WindowsMaps','Microsoft.MicrosoftSolitaireCollection','Microsoft.MicrosoftOfficeHub',
+                'Microsoft.Office.OneNote','Microsoft.SkypeApp','Microsoft.ZuneMusic','Microsoft.ZuneVideo',
+                'Microsoft.People','Microsoft.WindowsFeedbackHub','Microsoft.GetHelp','Microsoft.Getstarted',
+                'Microsoft.Wallet','Clipchamp.Clipchamp','Microsoft.PowerAutomateDesktop',
+                'MicrosoftCorporationII.QuickAssist','Microsoft.Windows.DevHome','Microsoft.OutlookForWindows',
+                'Microsoft.Todos','Microsoft.MicrosoftJournal'
+            )
+            $removed=0
+            foreach ($a in $apps) {
+                try {
+                    Get-AppxPackage -Name $a -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+                    Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $a } |
+                        ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null }
+                    $removed++
+                } catch { }
+                Invoke-UiPump $window
+            }
+            Write-Log "Bloatware sweep complete. Processed $removed app package(s)." 'ok'
+        }
+        Undo={ Write-Log 'Removed Store apps cannot be auto-restored. Reinstall any you miss from the Microsoft Store.' 'warn' }
+    }
+    [pscustomobject]@{
+        Id='db_xbox'; Category='Debloat'; Name='Remove Xbox Apps & Idle Xbox Services'
+        Desc='Removes the Xbox app, Game Bar overlay and speech overlay, and sets the four Xbox background services to Manual. Keeps Xbox Identity Provider so non-Xbox games that use it for sign-in still work. Services are reversible; apps reinstall from the Store.'
+        Check={ -not (Get-AppxPackage -Name 'Microsoft.GamingApp' -AllUsers -ErrorAction SilentlyContinue) -and
+                (Get-ServiceStartup 'XblGameSave') -eq 'Manual' }
+        Apply={
+            'Microsoft.XboxApp','Microsoft.GamingApp','Microsoft.XboxGameOverlay','Microsoft.XboxGamingOverlay',
+            'Microsoft.XboxSpeechToTextOverlay','Microsoft.Xbox.TCUI' | ForEach-Object {
+                Get-AppxPackage -Name $_ -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+            }
+            'XblAuthManager','XblGameSave','XboxGipSvc','XboxNetApiSvc' | ForEach-Object { Set-ServiceState -Name $_ -Startup Manual }
+            Write-Log 'Xbox apps removed; Xbox services set to Manual.' 'ok'
+        }
+        Undo={ 'XblAuthManager','XblGameSave','XboxGipSvc','XboxNetApiSvc' | ForEach-Object { Set-ServiceState -Name $_ -Startup Manual }
+               Write-Log 'Xbox apps must be reinstalled from the Store if needed.' 'warn' }
+    }
+    [pscustomobject]@{
+        Id='db_onedrive'; Category='Debloat'; Name='Uninstall OneDrive'
+        Desc='Closes and uninstalls the OneDrive desktop client and removes its run-at-startup entry. Files already in the cloud are untouched; only the local sync app is removed.'
+        Check={ -not (Test-Path "$env:LOCALAPPDATA\Microsoft\OneDrive\OneDrive.exe") }
+        Apply={
+            Start-Process 'taskkill.exe' '/f /im OneDrive.exe' -WindowStyle Hidden -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+            $setup = "$env:SystemRoot\SysWOW64\OneDriveSetup.exe"
+            if (-not (Test-Path $setup)) { $setup = "$env:SystemRoot\System32\OneDriveSetup.exe" }
+            if (Test-Path $setup) { Start-Process $setup '/uninstall' -Wait -ErrorAction SilentlyContinue }
+            Remove-RegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' 'OneDrive'
+            Write-Log 'OneDrive uninstalled.' 'ok'
+        }
+        Undo={ Write-Log 'Reinstall OneDrive from https://www.microsoft.com/microsoft-365/onedrive/download if needed.' 'warn' }
+    }
+    [pscustomobject]@{
+        Id='db_teams'; Category='Debloat'; Name='Remove Teams / Chat'
+        Desc='Removes the consumer Teams/Chat app and hides the Windows 11 taskbar Chat icon. Work or school Teams installed by your organization is separate and is not affected.'
+        Check={ (Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Chat' 'ChatIcon' 0) -eq 3 }
+        Apply={ Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Chat' 'ChatIcon' 3
+                'MicrosoftTeams','MSTeams' | ForEach-Object {
+                    Get-AppxPackage -Name $_ -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue } }
+        Undo={ Remove-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Chat' 'ChatIcon'
+               Write-Log 'Teams/Chat can be reinstalled from the Store if needed.' 'warn' }
+    }
+    [pscustomobject]@{
+        Id='db_phonelink'; Category='Debloat'; Name='Remove Phone Link'
+        Desc='Removes the Phone Link (Your Phone) app that mirrors Android/iPhone to Windows. Safe to remove if you do not link your phone to the PC.'
+        Check={ -not (Get-AppxPackage -Name 'Microsoft.YourPhone' -AllUsers -ErrorAction SilentlyContinue) }
+        Apply={ Get-AppxPackage -Name 'Microsoft.YourPhone' -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+                Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'Microsoft.YourPhone' } |
+                    ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null }
+                Write-Log 'Phone Link removed.' 'ok' }
+        Undo={ Write-Log 'Reinstall Phone Link from the Microsoft Store if needed.' 'warn' }
+    }
+    [pscustomobject]@{
+        Id='db_widgets'; Category='Debloat'; Name='Remove Widgets'
+        Desc='Removes the Windows Web Experience pack that powers the Widgets board and disables the news/interests policy, freeing the background Widgets process.'
+        Check={ (Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests' 1) -eq 0 -and
+                -not (Get-AppxPackage -Name 'MicrosoftWindows.Client.WebExperience' -AllUsers -ErrorAction SilentlyContinue) }
+        Apply={ Get-AppxPackage -Name 'MicrosoftWindows.Client.WebExperience' -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+                Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests' 0
+                Write-Log 'Widgets removed.' 'ok' }
+        Undo={ Remove-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' 'AllowNewsAndInterests'
+               Write-Log 'Reinstall the Web Experience pack from the Store if needed.' 'warn' }
+    }
+    [pscustomobject]@{
+        Id='db_recall'; Category='Debloat'; Name='Disable Windows Recall'; Recommended=$true
+        Desc='Disables Windows Recall (the AI feature that periodically snapshots your screen) via policy and removes the optional feature where present. Privacy plus a little less background overhead.'
+        Check={ (Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' 0) -eq 1 }
+        Apply={ Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' 1
+                Set-Reg 'HKCU:\Software\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' 1
+                try { Disable-WindowsOptionalFeature -Online -FeatureName 'Recall' -NoRestart -ErrorAction SilentlyContinue | Out-Null } catch { } }
+        Undo={ Remove-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis'
+               Remove-RegValue 'HKCU:\Software\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' }
+    }
+    [pscustomobject]@{
+        Id='db_edge'; Category='Debloat'; Name='Tame Microsoft Edge'
+        Desc='Disables Edge startup boost, background running, the sidebar/Hubs, the shopping assistant, and personalization reporting via policy. Edge is NOT uninstalled (removing it breaks Windows components); it is just stopped from running in the background and nagging.'
+        Check={ (Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'StartupBoostEnabled' 1) -eq 0 -and
+                (Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' 'BackgroundModeEnabled' 1) -eq 0 }
+        Apply={ $e='HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+                Set-Reg $e 'StartupBoostEnabled' 0
+                Set-Reg $e 'BackgroundModeEnabled' 0
+                Set-Reg $e 'HubsSidebarEnabled' 0
+                Set-Reg $e 'EdgeShoppingAssistantEnabled' 0
+                Set-Reg $e 'PersonalizationReportingEnabled' 0 }
+        Undo={ $e='HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+               'StartupBoostEnabled','BackgroundModeEnabled','HubsSidebarEnabled','EdgeShoppingAssistantEnabled','PersonalizationReportingEnabled' |
+               ForEach-Object { Remove-RegValue $e $_ } }
+    }
+    [pscustomobject]@{
+        Id='db_p2p'; Category='Debloat'; Name='Disable Update Delivery Optimization (P2P)'; Recommended=$true
+        Desc='Stops Windows from uploading update files to other PCs over the internet (peer-to-peer). Saves upload bandwidth that would otherwise compete with your game ping.'
+        Check={ (Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 1) -eq 0 }
+        Apply={ Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 0
+                Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config' 'DODownloadMode' 0 }
+        Undo={ Remove-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode'
+               Remove-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DeliveryOptimization\Config' 'DODownloadMode' }
+    }
+    [pscustomobject]@{
+        Id='db_reserved'; Category='Debloat'; Name='Disable Reserved Storage'
+        Desc='Disables the multi-GB block Windows keeps reserved for updates, reclaiming that disk space. Updates still install (they may briefly use free space instead). Applies once no update is pending.'
+        Check={ (Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ReserveManager' 'ShippedWithReserves' 1) -eq 0 }
+        Apply={ try { Set-ReservedStorageState -State Disabled -ErrorAction SilentlyContinue } catch { }
+                Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ReserveManager' 'ShippedWithReserves' 0 }
+        Undo={ try { Set-ReservedStorageState -State Enabled -ErrorAction SilentlyContinue } catch { }
+               Set-Reg 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ReserveManager' 'ShippedWithReserves' 1 }
     }
 #endregion
 )
@@ -532,6 +891,50 @@ function Get-HardwareAdvice {
 
     Add-Line ''
 
+    # Free space on fixed drives
+    try {
+        Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction Stop | ForEach-Object {
+            $freeGb = [math]::Round($_.FreeSpace / 1GB, 0)
+            $sizeGb = [math]::Round($_.Size / 1GB, 0)
+            $pct = if ($_.Size -gt 0) { [math]::Round(($_.FreeSpace / $_.Size) * 100, 0) } else { 0 }
+            if ($pct -lt 15) {
+                Add-Line "Drive $($_.DeviceID) $freeGb GB free of $sizeGb GB ($pct%). Under 15% free slows SSDs and causes stutter - free up space." 'warn'
+            } else {
+                Add-Line "Drive $($_.DeviceID) $freeGb GB free of $sizeGb GB ($pct%). Healthy headroom." 'ok'
+            }
+        }
+    } catch {
+        Add-Line "Could not read free space: $($_.Exception.Message)" 'warn'
+    }
+
+    Add-Line ''
+
+    # Active power plan
+    try {
+        $plan = (powercfg /getactivescheme 2>$null) -replace '.*\(([^)]+)\).*','$1'
+        if ($plan) { Add-Line "Active power plan: $plan" }
+        if ($plan -notmatch 'Ultimate|High') {
+            Add-Line 'Not on Ultimate/High Performance. Apply the Ultimate Performance plan in Rust FPS Engine.' 'accent'
+        } else {
+            Add-Line 'Power plan is performance-oriented.' 'ok'
+        }
+    } catch { }
+
+    Add-Line ''
+
+    # Display refresh rate
+    try {
+        $rr = (Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object { $_.CurrentRefreshRate } | Select-Object -First 1).CurrentRefreshRate
+        if ($rr) {
+            Add-Line "Current display refresh rate: $rr Hz"
+            if ($rr -le 60) {
+                Add-Line 'Running at 60 Hz or less. If your monitor supports more, set it in Settings > Display > Advanced display.' 'warn'
+            }
+        }
+    } catch { }
+
+    Add-Line ''
+
     # CPU / BIOS
     try {
         $cpu = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
@@ -555,6 +958,21 @@ function Get-HardwareAdvice {
     }
 
     Add-Line ''
+    Add-Line '=== MANUAL HIGH-IMPACT STEPS (cannot be automated from here) ===' 'accent'
+    Add-Line 'These are the biggest real FPS gains and must be done by hand:'
+    Add-Line ''
+    Add-Line '1. RAM: Enable EXPO (AMD) or XMP (Intel) in BIOS. Without it your RAM runs slow and 1% lows suffer. One of the biggest free boosts.' 'accent'
+    Add-Line '2. Resizable BAR: Enable ReBAR + Above 4G Decoding in BIOS (and SAM in AMD software). Real gains in many GPU-bound games.' 'accent'
+    Add-Line '3. GPU drivers: Do a clean install. Run DDU (Display Driver Uninstaller) in Safe Mode, then install the latest driver fresh. Best fix for microstutter, random FPS drops and instability.' 'accent'
+    Add-Line '4. NVIDIA Control Panel: Low Latency Mode = Ultra, Power Management = Prefer Maximum Performance, Texture Filtering = High Performance, Shader Cache = On, V-Sync = Off (use G-Sync if supported). AMD Adrenalin: Anti-Lag On, Texture Filtering Performance, Surface Format Optimization On.' 'accent'
+    Add-Line '5. GPU undervolt (MSI Afterburner): lower temps, quieter fans and more STABLE boost clocks, which often means higher sustained FPS. Done right it is free performance.' 'accent'
+    Add-Line '6. Ryzen Curve Optimizer (AMD, in BIOS): a negative curve lowers temps and lets the CPU boost higher for longer. Excellent on Ryzen.' 'accent'
+    Add-Line '7. FPS cap: cap a few frames below your refresh (237 on 240 Hz, 357 on 360 Hz) for smoother frametimes and lower latency. Set it in-game or with RTSS.' 'accent'
+    Add-Line '8. SSD free space: keep 10-20% free. Nearly full SSDs slow down badly. See the free-space report above.' 'accent'
+    Add-Line '9. Monitor Hz: confirm Windows is actually set to your panel max refresh rate (Settings > Display > Advanced display), not 60 Hz.' 'accent'
+    Add-Line ''
+    Add-Line 'Honest note: most in-Windows/registry tweaks improve frametime consistency, 1% lows and input latency more than they raise the average FPS number. The steps above (RAM speed, ReBAR, clean drivers, undervolt, in-game settings, cooling) move average FPS the most.' 'warn'
+    Add-Line ''
     Add-Line 'Diagnostics complete. Review warnings before applying Rust FPS tweaks.' 'accent'
 
     if ($OutputBox) {
@@ -562,7 +980,7 @@ function Get-HardwareAdvice {
     }
 }
 
-# ---- 6. XAML (Aura Design) -------------------------------------------------
+# ---- 6. XAML (Aura Design — dark + soft rounded) ----------------------------
 $XAML = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -572,13 +990,15 @@ $XAML = @"
         FontFamily="Segoe UI" ResizeMode="CanMinimize">
 
   <Window.Resources>
-    <SolidColorBrush x:Key="BgDeep" Color="#0D0E12"/>
-    <SolidColorBrush x:Key="BorderClr" Color="#1F2430"/>
-    <SolidColorBrush x:Key="TextWhite" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="TextMuted" Color="#94A3B8"/>
-    <SolidColorBrush x:Key="Accent" Color="#6366F1"/>
-    <SolidColorBrush x:Key="AccentHover" Color="#818CF8"/>
-    <SolidColorBrush x:Key="Danger" Color="#EF4444"/>
+    <SolidColorBrush x:Key="BgDeep" Color="#030405"/>
+    <SolidColorBrush x:Key="BgPanel" Color="#0A0B0F"/>
+    <SolidColorBrush x:Key="BgGlass" Color="#880A0B10"/>
+    <SolidColorBrush x:Key="BorderClr" Color="#181B24"/>
+    <SolidColorBrush x:Key="TextWhite" Color="#F1F5F9"/>
+    <SolidColorBrush x:Key="TextMuted" Color="#64748B"/>
+    <SolidColorBrush x:Key="Accent" Color="#22D3EE"/>
+    <SolidColorBrush x:Key="AccentViolet" Color="#6366F1"/>
+    <SolidColorBrush x:Key="Danger" Color="#F87171"/>
 
     <Style x:Key="NavRadio" TargetType="RadioButton">
       <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
@@ -587,24 +1007,24 @@ $XAML = @"
       <Setter Property="FontSize" Value="13"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Margin" Value="8,2"/>
-      <Setter Property="Padding" Value="12,10"/>
+      <Setter Property="Margin" Value="4,3"/>
+      <Setter Property="Padding" Value="14,11"/>
       <Setter Property="HorizontalContentAlignment" Value="Left"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="RadioButton">
-            <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="{StaticResource BorderClr}"
-                    BorderThickness="1" CornerRadius="0" Padding="{TemplateBinding Padding}">
+            <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="#141820"
+                    BorderThickness="1" CornerRadius="12" Padding="{TemplateBinding Padding}">
               <ContentPresenter VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="bd" Property="Background" Value="#1A1F2E"/>
+                <Setter TargetName="bd" Property="Background" Value="#141820"/>
                 <Setter Property="Foreground" Value="{StaticResource Accent}"/>
-                <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                <Setter TargetName="bd" Property="BorderBrush" Value="#334155"/>
               </Trigger>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="bd" Property="Background" Value="#141820"/>
+                <Setter TargetName="bd" Property="Background" Value="#0D0F14"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -614,23 +1034,23 @@ $XAML = @"
 
     <Style x:Key="DeckButton" TargetType="Button">
       <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
-      <Setter Property="Background" Value="#141820"/>
+      <Setter Property="Background" Value="#0D0F14"/>
       <Setter Property="BorderBrush" Value="{StaticResource BorderClr}"/>
       <Setter Property="BorderThickness" Value="1"/>
       <Setter Property="FontSize" Value="12"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
-      <Setter Property="Padding" Value="14,9"/>
+      <Setter Property="Padding" Value="16,10"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
             <Border x:Name="b" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                    BorderThickness="1" CornerRadius="0" Padding="{TemplateBinding Padding}">
+                    BorderThickness="1" CornerRadius="12" Padding="{TemplateBinding Padding}">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="b" Property="Background" Value="#1A1F2E"/>
+                <Setter TargetName="b" Property="Background" Value="#141820"/>
                 <Setter Property="Foreground" Value="{StaticResource TextWhite}"/>
               </Trigger>
             </ControlTemplate.Triggers>
@@ -640,39 +1060,48 @@ $XAML = @"
     </Style>
 
     <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource DeckButton}">
-      <Setter Property="Foreground" Value="White"/>
+      <Setter Property="Foreground" Value="#030405"/>
       <Setter Property="Background" Value="{StaticResource Accent}"/>
       <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
+      <Setter Property="FontWeight" Value="Bold"/>
     </Style>
 
     <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource DeckButton}">
       <Setter Property="Foreground" Value="{StaticResource Danger}"/>
-      <Setter Property="Background" Value="#141820"/>
+      <Setter Property="Background" Value="#0D0F14"/>
     </Style>
 
     <Style x:Key="WinChrome" TargetType="Button">
-      <Setter Property="Width" Value="36"/>
-      <Setter Property="Height" Value="28"/>
+      <Setter Property="Width" Value="34"/>
+      <Setter Property="Height" Value="30"/>
       <Setter Property="Background" Value="Transparent"/>
       <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
       <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="FontSize" Value="14"/>
+      <Setter Property="FontSize" Value="13"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="b" Background="{TemplateBinding Background}">
+            <Border x:Name="b" Background="{TemplateBinding Background}" CornerRadius="10">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="b" Property="Background" Value="#1A1F2E"/>
+                <Setter TargetName="b" Property="Background" Value="#141820"/>
                 <Setter Property="Foreground" Value="{StaticResource TextWhite}"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
+    </Style>
+
+    <Style x:Key="SoftCard" TargetType="Border">
+      <Setter Property="Background" Value="#770A0B10"/>
+      <Setter Property="BorderBrush" Value="{StaticResource BorderClr}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="14"/>
+      <Setter Property="Padding" Value="16"/>
     </Style>
 
     <Style TargetType="CheckBox">
@@ -683,140 +1112,144 @@ $XAML = @"
     </Style>
 
     <Style TargetType="ToolTip">
-      <Setter Property="Background" Value="#0D0E12"/>
+      <Setter Property="Background" Value="#0A0B0F"/>
       <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
       <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
       <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Padding" Value="10"/>
+      <Setter Property="Padding" Value="12"/>
       <Setter Property="MaxWidth" Value="340"/>
     </Style>
   </Window.Resources>
 
-  <Border Background="{StaticResource BgDeep}" BorderBrush="{StaticResource BorderClr}" BorderThickness="1">
-    <Grid>
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="240"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
+  <Border Background="#030405" BorderBrush="#181B24" BorderThickness="1" CornerRadius="20">
+    <Grid ClipToBounds="True">
+      <Canvas x:Name="SkyCanvas" IsHitTestVisible="False" Background="#030405"/>
 
-      <!-- SIDEBAR -->
-      <Border Grid.Column="0" BorderBrush="{StaticResource BorderClr}" BorderThickness="0,0,1,0">
-        <DockPanel LastChildFill="True">
-          <StackPanel DockPanel.Dock="Top" Margin="18,20,14,12">
-            <TextBlock Text="ROM-OPTI" FontSize="20" FontWeight="Bold" Foreground="{StaticResource TextWhite}"/>
-            <TextBlock Text="v3  •  Rust FPS Tuner" FontSize="11" Foreground="{StaticResource TextMuted}" Margin="1,2,0,0"/>
-            <TextBlock x:Name="sysLine" FontSize="10" Foreground="{StaticResource TextMuted}" Margin="1,10,0,0" TextWrapping="Wrap"/>
-          </StackPanel>
+      <Grid Margin="10">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="248"/>
+          <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
 
-          <StackPanel DockPanel.Dock="Top" Margin="6,4,6,0">
-            <RadioButton x:Name="navDashboard" Style="{StaticResource NavRadio}" Content="Dashboard" IsChecked="True" GroupName="Nav"/>
-            <RadioButton x:Name="navPreferences" Style="{StaticResource NavRadio}" Content="System Preferences" GroupName="Nav"/>
-            <RadioButton x:Name="navTweaks" Style="{StaticResource NavRadio}" Content="Performance Tweaks" GroupName="Nav"/>
-            <RadioButton x:Name="navRust" Style="{StaticResource NavRadio}" Content="Rust FPS Engine" GroupName="Nav"/>
-            <RadioButton x:Name="navDebloat" Style="{StaticResource NavRadio}" Content="Debloat Controls" GroupName="Nav"/>
-            <RadioButton x:Name="navHardware" Style="{StaticResource NavRadio}" Content="Hardware Scanner" GroupName="Nav"/>
-          </StackPanel>
-
-          <Border DockPanel.Dock="Bottom" Margin="10,8,10,12" BorderBrush="{StaticResource BorderClr}" BorderThickness="1" Height="160">
-            <DockPanel>
-              <TextBlock DockPanel.Dock="Top" Text="Activity Log" FontSize="10" Foreground="{StaticResource TextMuted}" Margin="8,6,8,4"/>
-              <ScrollViewer x:Name="logScroll" VerticalScrollBarVisibility="Auto" Padding="8,0,8,6">
-                <ListBox x:Name="lstLog" Background="Transparent" BorderThickness="0"
-                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                  <ListBox.ItemContainerStyle>
-                    <Style TargetType="ListBoxItem">
-                      <Setter Property="Padding" Value="0"/>
-                      <Setter Property="Margin" Value="0"/>
-                      <Setter Property="Background" Value="Transparent"/>
-                      <Setter Property="BorderThickness" Value="0"/>
-                      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                      <Setter Property="Focusable" Value="False"/>
-                    </Style>
-                  </ListBox.ItemContainerStyle>
-                </ListBox>
-              </ScrollViewer>
-            </DockPanel>
-          </Border>
-        </DockPanel>
-      </Border>
-
-      <!-- MAIN WORKSPACE -->
-      <Grid Grid.Column="1">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="52"/>
-          <RowDefinition Height="*"/>
-          <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-
-        <!-- Header -->
-        <Border x:Name="titleBar" Grid.Row="0" BorderBrush="{StaticResource BorderClr}" BorderThickness="0,0,0,1"
-                Background="#0D0E12">
-          <DockPanel Margin="20,0,8,0" LastChildFill="True">
-            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-              <Button x:Name="btnMinimize" Style="{StaticResource WinChrome}" Content="—"/>
-              <Button x:Name="btnClose" Style="{StaticResource WinChrome}" Content="✕" Foreground="{StaticResource Danger}"/>
+        <!-- SIDEBAR -->
+        <Border Grid.Column="0" Margin="0,0,6,0" Background="#770A0B10"
+                BorderBrush="{StaticResource BorderClr}" BorderThickness="1" CornerRadius="16">
+          <DockPanel LastChildFill="True">
+            <StackPanel DockPanel.Dock="Top" Margin="18,22,16,14">
+              <TextBlock Text="ROM-OPTI" FontSize="21" FontWeight="Bold" Foreground="{StaticResource TextWhite}"/>
+              <TextBlock Text="v3  •  Rust FPS Tuner" FontSize="11" Foreground="{StaticResource TextMuted}" Margin="2,3,0,0"/>
+              <TextBlock x:Name="sysLine" FontSize="10" Foreground="#475569" Margin="2,10,0,0" TextWrapping="Wrap"/>
             </StackPanel>
-            <TextBlock x:Name="txtCategoryTitle" Text="Dashboard" FontSize="18" FontWeight="Bold"
-                       Foreground="{StaticResource TextWhite}" VerticalAlignment="Center"/>
+
+            <StackPanel DockPanel.Dock="Top" Margin="8,2,8,0">
+              <RadioButton x:Name="navDashboard" Style="{StaticResource NavRadio}" Content="Dashboard" IsChecked="True" GroupName="Nav"/>
+              <RadioButton x:Name="navPreferences" Style="{StaticResource NavRadio}" Content="System Preferences" GroupName="Nav"/>
+              <RadioButton x:Name="navTweaks" Style="{StaticResource NavRadio}" Content="Performance Tweaks" GroupName="Nav"/>
+              <RadioButton x:Name="navRust" Style="{StaticResource NavRadio}" Content="Rust FPS Engine" GroupName="Nav"/>
+              <RadioButton x:Name="navDebloat" Style="{StaticResource NavRadio}" Content="Debloat Controls" GroupName="Nav"/>
+              <RadioButton x:Name="navHardware" Style="{StaticResource NavRadio}" Content="Hardware Scanner" GroupName="Nav"/>
+            </StackPanel>
+
+            <Border DockPanel.Dock="Bottom" Margin="10,8,10,14" Background="#5506080C"
+                    BorderBrush="{StaticResource BorderClr}" BorderThickness="1" CornerRadius="14" Height="168">
+              <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Text="Activity Log" FontSize="10" Foreground="{StaticResource TextMuted}" Margin="12,10,12,6"/>
+                <ScrollViewer x:Name="logScroll" VerticalScrollBarVisibility="Auto" Padding="10,0,10,10">
+                  <ListBox x:Name="lstLog" Background="Transparent" BorderThickness="0"
+                           ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox.ItemContainerStyle>
+                      <Style TargetType="ListBoxItem">
+                        <Setter Property="Padding" Value="0"/>
+                        <Setter Property="Margin" Value="0"/>
+                        <Setter Property="Background" Value="Transparent"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                        <Setter Property="Focusable" Value="False"/>
+                      </Style>
+                    </ListBox.ItemContainerStyle>
+                  </ListBox>
+                </ScrollViewer>
+              </DockPanel>
+            </Border>
           </DockPanel>
         </Border>
 
-        <!-- Content -->
-        <Grid Grid.Row="1" Margin="20,16,20,12">
-          <!-- Dashboard -->
-          <StackPanel x:Name="viewDashboard" Visibility="Visible">
-            <TextBlock Text="Welcome to Rom-Opti v3" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource TextWhite}"/>
-            <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="{StaticResource TextMuted}" FontSize="13"
-              Text="A single-file Windows optimizer built for Rust. Pick a category from the sidebar, review tweaks with the (?) tooltips, then Execute or Undo selected changes. Run Hardware Scanner first for tailored advice."/>
-            <Border Margin="0,20,0,0" BorderBrush="{StaticResource BorderClr}" BorderThickness="1" Padding="16">
-              <StackPanel>
-                <TextBlock Text="Quick Start" FontWeight="SemiBold" Foreground="{StaticResource Accent}" FontSize="13"/>
-                <TextBlock Margin="0,8,0,0" Foreground="{StaticResource TextMuted}" FontSize="12" TextWrapping="Wrap"
-                  Text="1. Hardware Scanner → Run Diagnostics&#10;2. Performance Tweaks → tick Create Restore Point&#10;3. Rust FPS Engine → Apply Recommended preset&#10;4. EXECUTE SELECTED → reboot when prompted"/>
-              </StackPanel>
-            </Border>
-          </StackPanel>
-
-          <!-- Tweak panels -->
-          <ScrollViewer x:Name="svOptions" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-            <WrapPanel x:Name="pnlOptions" Orientation="Horizontal" Width="760"/>
-          </ScrollViewer>
-
-          <!-- Hardware Scanner -->
-          <Grid x:Name="viewHardware" Visibility="Collapsed">
+        <!-- MAIN WORKSPACE -->
+        <Border Grid.Column="1" Background="#770A0B10" BorderBrush="{StaticResource BorderClr}"
+                BorderThickness="1" CornerRadius="16">
+          <Grid>
             <Grid.RowDefinitions>
-              <RowDefinition Height="Auto"/>
-              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="54"/>
               <RowDefinition Height="*"/>
+              <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
-            <TextBlock Text="Scan your hardware and get tailored BIOS/storage/RAM advice before applying aggressive tweaks."
-                       Foreground="{StaticResource TextMuted}" FontSize="13" TextWrapping="Wrap" Margin="0,0,0,12"/>
-            <Button x:Name="btnRunDiagnostics" Grid.Row="1" Style="{StaticResource PrimaryButton}"
-                    Content="Run Diagnostics" HorizontalAlignment="Left" Margin="0,0,0,12"/>
-            <Border Grid.Row="2" BorderBrush="{StaticResource BorderClr}" BorderThickness="1" Padding="12">
-              <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <TextBox x:Name="txtHardwareAdvice" Background="Transparent" BorderThickness="0"
-                         Foreground="{StaticResource TextMuted}" FontFamily="Consolas" FontSize="12"
-                         IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
-                         Text="Click Run Diagnostics to analyze your system."/>
+
+            <Border x:Name="titleBar" Grid.Row="0" BorderBrush="{StaticResource BorderClr}"
+                    BorderThickness="0,0,0,1" Background="#4406080C" CornerRadius="16,16,0,0">
+              <DockPanel Margin="22,0,10,0" LastChildFill="True">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                  <Button x:Name="btnMinimize" Style="{StaticResource WinChrome}" Content="—"/>
+                  <Button x:Name="btnClose" Style="{StaticResource WinChrome}" Content="✕" Foreground="{StaticResource Danger}"/>
+                </StackPanel>
+                <TextBlock x:Name="txtCategoryTitle" Text="Dashboard" FontSize="18" FontWeight="Bold"
+                           Foreground="{StaticResource TextWhite}" VerticalAlignment="Center"/>
+              </DockPanel>
+            </Border>
+
+            <Grid Grid.Row="1" Margin="22,18,22,14">
+              <StackPanel x:Name="viewDashboard" Visibility="Visible">
+                <TextBlock Text="Welcome to Rom-Opti v3" FontSize="17" FontWeight="SemiBold" Foreground="{StaticResource TextWhite}"/>
+                <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="{StaticResource TextMuted}" FontSize="13"
+                  Text="A single-file Windows optimizer built for Rust. Pick a category from the sidebar, review tweaks with the (?) tooltips, then Execute or Undo selected changes. Run Hardware Scanner first for tailored advice."/>
+                <Border Style="{StaticResource SoftCard}" Margin="0,22,0,0">
+                  <StackPanel>
+                    <TextBlock Text="Quick Start" FontWeight="SemiBold" Foreground="{StaticResource Accent}" FontSize="13"/>
+                    <TextBlock Margin="0,8,0,0" Foreground="{StaticResource TextMuted}" FontSize="12" TextWrapping="Wrap"
+                      Text="1. Hardware Scanner → Run Diagnostics&#10;2. Performance Tweaks → tick Create Restore Point&#10;3. Rust FPS Engine → Apply Recommended preset&#10;4. EXECUTE SELECTED → reboot when prompted"/>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+
+              <ScrollViewer x:Name="svOptions" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <WrapPanel x:Name="pnlOptions" Orientation="Horizontal" Width="740"/>
               </ScrollViewer>
+
+              <Grid x:Name="viewHardware" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <TextBlock Text="Scan your hardware and get tailored BIOS/storage/RAM advice before applying aggressive tweaks."
+                           Foreground="{StaticResource TextMuted}" FontSize="13" TextWrapping="Wrap" Margin="0,0,0,14"/>
+                <Button x:Name="btnRunDiagnostics" Grid.Row="1" Style="{StaticResource PrimaryButton}"
+                        Content="Run Diagnostics" HorizontalAlignment="Left" Margin="0,0,0,14"/>
+                <Border Grid.Row="2" Style="{StaticResource SoftCard}" Padding="14">
+                  <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <TextBox x:Name="txtHardwareAdvice" Background="Transparent" BorderThickness="0"
+                             Foreground="{StaticResource TextMuted}" FontFamily="Consolas" FontSize="12"
+                             IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
+                             Text="Click Run Diagnostics to analyze your system."/>
+                  </ScrollViewer>
+                </Border>
+              </Grid>
+            </Grid>
+
+            <Border Grid.Row="2" BorderBrush="{StaticResource BorderClr}" BorderThickness="0,1,0,0"
+                    Background="#4406080C" CornerRadius="0,0,16,16" Padding="20,14">
+              <DockPanel LastChildFill="False">
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                  <Button x:Name="btnExecute" Style="{StaticResource PrimaryButton}" Content="EXECUTE SELECTED" Margin="8,0,0,0"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal">
+                  <Button x:Name="btnRecommended" Style="{StaticResource DeckButton}" Content="Apply Recommended"/>
+                  <Button x:Name="btnSelectAll" Style="{StaticResource DeckButton}" Content="Select All" Margin="8,0,0,0"/>
+                  <Button x:Name="btnClear" Style="{StaticResource DeckButton}" Content="Clear" Margin="8,0,0,0"/>
+                  <Button x:Name="btnUndo" Style="{StaticResource DangerButton}" Content="UNDO SELECTED" Margin="8,0,0,0"/>
+                </StackPanel>
+              </DockPanel>
             </Border>
           </Grid>
-        </Grid>
-
-        <!-- Control Deck -->
-        <Border Grid.Row="2" BorderBrush="{StaticResource BorderClr}" BorderThickness="0,1,0,0" Padding="20,12">
-          <DockPanel LastChildFill="False">
-            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-              <Button x:Name="btnExecute" Style="{StaticResource PrimaryButton}" Content="EXECUTE SELECTED" Margin="8,0,0,0"/>
-            </StackPanel>
-            <StackPanel Orientation="Horizontal">
-              <Button x:Name="btnRecommended" Style="{StaticResource DeckButton}" Content="Apply Recommended"/>
-              <Button x:Name="btnSelectAll" Style="{StaticResource DeckButton}" Content="Select All" Margin="8,0,0,0"/>
-              <Button x:Name="btnClear" Style="{StaticResource DeckButton}" Content="Clear" Margin="8,0,0,0"/>
-              <Button x:Name="btnUndo" Style="{StaticResource DangerButton}" Content="UNDO SELECTED" Margin="8,0,0,0"/>
-            </StackPanel>
-          </DockPanel>
         </Border>
       </Grid>
     </Grid>
@@ -824,7 +1257,119 @@ $XAML = @"
 </Window>
 "@
 
-# ---- 7. LOAD UI ------------------------------------------------------------
+# ---- 7. METEOR SHOWER ------------------------------------------------------
+function New-ColorBrush([string]$Hex) {
+    New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString($Hex))
+}
+
+function New-Meteor {
+    param([double]$W, [double]$H)
+
+    $isOrange = ($script:rng.Next(75) -eq 0)
+    $len  = if ($isOrange) { $script:rng.Next(110, 200) } else { $script:rng.Next(70, 150) }
+    $thk  = if ($isOrange) { 3.2 } else { 2.4 }
+    $angle = 28 + $script:rng.Next(-4, 5)
+    $rad   = $angle * [Math]::PI / 180
+
+    $m = New-Object Windows.Controls.Canvas
+    $m.Width = $len; $m.Height = $thk
+
+    $rect = New-Object Windows.Shapes.Rectangle
+    $rect.Width = $len; $rect.Height = $thk
+    $rect.RadiusX = $thk / 2; $rect.RadiusY = $thk / 2
+
+    $grad = New-Object Windows.Media.LinearGradientBrush
+    $grad.StartPoint = '0,0.5'; $grad.EndPoint = '1,0.5'
+
+    if ($isOrange) {
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(0, 255, 120, 20), 0.0)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(160, 255, 140, 40), 0.65)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(255, 255, 200, 80), 1.0)))
+    } else {
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(0, 0, 220, 255), 0.0)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(180, 34, 211, 238), 0.68)))
+        $grad.GradientStops.Add((New-Object Windows.Media.GradientStop ([Windows.Media.Color]::FromArgb(255, 224, 255, 255), 1.0)))
+    }
+    $rect.Fill = $grad
+    [Windows.Controls.Canvas]::SetLeft($rect, 0)
+    [Windows.Controls.Canvas]::SetTop($rect, 0)
+    $m.Children.Add($rect) | Out-Null
+
+    $head = New-Object Windows.Shapes.Ellipse
+    $hr = if ($isOrange) { 4.2 } else { 3.0 }
+    $head.Width = $hr * 2; $head.Height = $hr * 2
+    $head.Fill = if ($isOrange) { New-ColorBrush '#FFE08A' } else { New-ColorBrush '#F0FDFF' }
+
+    $glow = New-Object Windows.Media.Effects.DropShadowEffect
+    if ($isOrange) {
+        $glow.Color = [Windows.Media.Color]::FromRgb(255, 140, 30)
+        $glow.BlurRadius = 18; $glow.Opacity = 1.0
+    } else {
+        $glow.Color = [Windows.Media.Color]::FromRgb(34, 211, 238)
+        $glow.BlurRadius = 16; $glow.Opacity = 0.95
+    }
+    $glow.ShadowDepth = 0
+    $head.Effect = $glow
+
+    [Windows.Controls.Canvas]::SetLeft($head, $len - $hr)
+    [Windows.Controls.Canvas]::SetTop($head, ($thk / 2) - $hr)
+    $m.Children.Add($head) | Out-Null
+
+    $rot = New-Object Windows.Media.RotateTransform ($angle, 0, 0)
+    $tt  = New-Object Windows.Media.TranslateTransform
+    $tg  = New-Object Windows.Media.TransformGroup
+    $tg.Children.Add($rot); $tg.Children.Add($tt)
+    $m.RenderTransform = $tg
+
+    $dist   = $H + $len + 320
+    $startX = $script:rng.Next(-280, [int]$W)
+    $startY = -1 * $script:rng.Next(40, 420)
+    $endX   = $startX + $dist * [Math]::Cos($rad)
+    $endY   = $startY + $dist * [Math]::Sin($rad)
+    $dur    = if ($isOrange) { $script:rng.Next(32, 52) / 10 } else { $script:rng.Next(14, 30) / 10 }
+    $delay  = $script:rng.Next(0, 80) / 10
+
+    $ax = New-Object Windows.Media.Animation.DoubleAnimation
+    $ax.From = $startX; $ax.To = $endX
+    $ax.Duration = New-Object Windows.Duration ([TimeSpan]::FromSeconds($dur))
+    $ax.BeginTime = [TimeSpan]::FromSeconds($delay)
+    $ax.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+
+    $ay = New-Object Windows.Media.Animation.DoubleAnimation
+    $ay.From = $startY; $ay.To = $endY
+    $ay.Duration = New-Object Windows.Duration ([TimeSpan]::FromSeconds($dur))
+    $ay.BeginTime = [TimeSpan]::FromSeconds($delay)
+    $ay.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+
+    $tt.BeginAnimation([Windows.Media.TranslateTransform]::XProperty, $ax)
+    $tt.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, $ay)
+    return $m
+}
+
+function Build-Sky {
+    param($Canvas)
+
+    $w = $Canvas.ActualWidth;  if ($w -lt 50) { $w = 1060 }
+    $h = $Canvas.ActualHeight; if ($h -lt 50) { $h = 700 }
+    $Canvas.Children.Clear()
+
+    for ($i = 0; $i -lt 90; $i++) {
+        $s = New-Object Windows.Shapes.Ellipse
+        $r = $script:rng.Next(3, 12) / 10.0
+        $s.Width = $r * 2; $s.Height = $r * 2
+        $s.Fill = New-ColorBrush '#64748B'
+        $s.Opacity = $script:rng.Next(6, 35) / 100.0
+        [Windows.Controls.Canvas]::SetLeft($s, $script:rng.Next(0, [int]$w))
+        [Windows.Controls.Canvas]::SetTop($s, $script:rng.Next(0, [int]$h))
+        $Canvas.Children.Add($s) | Out-Null
+    }
+
+    for ($i = 0; $i -lt 30; $i++) {
+        $Canvas.Children.Add((New-Meteor -W $w -H $h)) | Out-Null
+    }
+}
+
+# ---- 8. LOAD UI ------------------------------------------------------------
 [xml]$xamlXml = $XAML
 $reader = New-Object System.Xml.XmlNodeReader $xamlXml
 $window = [Windows.Markup.XamlReader]::Load($reader)
@@ -845,6 +1390,7 @@ $viewHardware     = $window.FindName('viewHardware')
 $svOptions        = $window.FindName('svOptions')
 $txtHardwareAdvice = $window.FindName('txtHardwareAdvice')
 $btnRunDiagnostics = $window.FindName('btnRunDiagnostics')
+$SkyCanvas         = $window.FindName('SkyCanvas')
 
 # System info line
 try {
@@ -856,11 +1402,11 @@ try {
     $sysLine.Text = 'System info unavailable'
 }
 
-# ---- 8. UI STATE -----------------------------------------------------------
+# ---- 9. UI STATE -----------------------------------------------------------
 $script:CheckBoxes = @{}
 $script:AppliedBrush = New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString('#4ADE80'))
 $script:DefaultBrush = New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString('#FFFFFF'))
-$script:AccentBrush  = New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString('#6366F1'))
+$script:AccentBrush  = New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString('#22D3EE'))
 
 $NavMap = [ordered]@{
     Dashboard         = @{ Title='Dashboard';          Category=$null;       View='dashboard' }
@@ -874,10 +1420,17 @@ $NavMap = [ordered]@{
 function New-TweakCheckBox {
     param($Tweak)
 
+    $card = New-Object Windows.Controls.Border
+    $card.Background = New-ColorBrush '#550A0B10'
+    $card.BorderBrush = New-ColorBrush '#181B24'
+    $card.BorderThickness = '1'
+    $card.CornerRadius = 12
+    $card.Padding = '12,8'
+    $card.Margin = '0,5,14,5'
+    $card.Width = 352
+
     $container = New-Object Windows.Controls.StackPanel
     $container.Orientation = 'Horizontal'
-    $container.Margin = '0,4,24,4'
-    $container.Width = 360
 
     $cb = New-Object Windows.Controls.CheckBox
     $cb.Tag = $Tweak.Id
@@ -899,9 +1452,10 @@ function New-TweakCheckBox {
 
     $container.Children.Add($cb) | Out-Null
     $container.Children.Add($badge) | Out-Null
+    $card.Child = $container
 
     $script:CheckBoxes[$Tweak.Id] = $cb
-    return $container
+    return $card
 }
 
 function Update-TweakAppliedState {
@@ -1045,7 +1599,7 @@ function Set-RecommendedSelection {
     Write-Log 'Recommended tweaks selected in current view. Review, then EXECUTE.' 'accent'
 }
 
-# ---- 9. EVENT WIRING -------------------------------------------------------
+# ---- 10. EVENT WIRING ------------------------------------------------------
 $navRadios = @{
     Dashboard   = $window.FindName('navDashboard')
     Preferences = $window.FindName('navPreferences')
@@ -1075,12 +1629,13 @@ $window.FindName('btnExecute').Add_Click({ Invoke-ExecuteSelected })
 $window.FindName('btnUndo').Add_Click({ Invoke-UndoSelected })
 $btnRunDiagnostics.Add_Click({ Get-HardwareAdvice -OutputBox $txtHardwareAdvice })
 
-# ---- 10. START -------------------------------------------------------------
+# ---- 11. START -------------------------------------------------------------
 $window.Add_Loaded({
+    Build-Sky $SkyCanvas
     Show-Category 'Dashboard'
     Write-Log 'Rom-Opti v3 ready. Run Hardware Scanner first for tailored advice.' 'accent'
+    Write-Log 'Watch the sky — bright cyan meteors, with a rare orange streak.' 'info'
 
-    # Pre-scan all tweaks for applied state (checkboxes built on category switch)
     foreach ($t in $Tweaks) {
         try {
             if (& $t.Check) {
@@ -1088,6 +1643,10 @@ $window.Add_Loaded({
             }
         } catch { }
     }
+})
+
+$window.Add_SizeChanged({
+    if ($SkyCanvas.ActualWidth -gt 50) { Build-Sky $SkyCanvas }
 })
 
 $window.ShowDialog() | Out-Null
