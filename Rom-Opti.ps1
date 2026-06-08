@@ -1581,11 +1581,13 @@ function New-TweakCheckBox {
     $cb.Tag = $Tweak.Id
     $cb.Content = $Tweak.Name
 
-    # The persistent set is the source of truth. Keep it in sync and restore checked state from it
-    # so switching tabs no longer wipes selections, and Apply Recommended can span all sections.
+    # Capture the set object and id as locals so GetNewClosure copies the live HashSet reference.
+    # (Referencing $script:SelectedIds inside a GetNewClosure block fails: the closure runs in a new
+    # module scope where $script: points at the module's own - empty - scope, not the real one.)
     $tid = $Tweak.Id
-    $cb.Add_Checked({   [void]$script:SelectedIds.Add($tid) }.GetNewClosure())
-    $cb.Add_Unchecked({ [void]$script:SelectedIds.Remove($tid) }.GetNewClosure())
+    $set = $script:SelectedIds
+    $cb.Add_Checked({   [void]$set.Add($tid) }.GetNewClosure())
+    $cb.Add_Unchecked({ [void]$set.Remove($tid) }.GetNewClosure())
     $cb.IsChecked = $script:SelectedIds.Contains($Tweak.Id)
 
     $badge = New-Object Windows.Controls.TextBlock
