@@ -28,8 +28,8 @@ $script:rng = New-Object System.Random
 # ---- 3. HELPERS ------------------------------------------------------------
 function Set-Reg {
     param([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord')
-    if (-not (Test-Path $Path)) { New-Item -Path $Path -Force | Out-Null }
-    New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType $Type -Force | Out-Null
+    if (-not (Test-Path $Path)) { [void](New-Item -Path $Path -Force) }
+    [void](New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType $Type -Force)
 }
 
 function Get-RegValue {
@@ -50,17 +50,24 @@ function Remove-RegValue {
 
 function Set-ServiceState {
     param([string]$Name, [ValidateSet('Disabled','Manual','Automatic')]$Startup, [switch]$Stop)
-    if (Get-Service -Name $Name -ErrorAction SilentlyContinue) {
-        if ($Stop) { Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue }
-        Set-Service -Name $Name -StartupType $Startup -ErrorAction SilentlyContinue
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if (-not $svc) { return }   # service is not present on this Windows edition - nothing to change
+    if ($Stop -and $svc.Status -ne 'Stopped') {
+        # Stopping is best-effort: some services refuse to stop while in use, which is fine.
+        try { Stop-Service -Name $Name -Force -ErrorAction Stop } catch { }
     }
+    # A genuine failure to change the start type (permissions, protected service) is allowed to
+    # surface to the per-tweak try/catch so the log shows an honest [FAIL] instead of a false [OK].
+    Set-Service -Name $Name -StartupType $Startup -ErrorAction Stop
 }
 
 function Get-ServiceStartup {
     param([string]$Name)
     $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
-    if ($svc) { return (Get-CimInstance Win32_Service -Filter "Name='$Name'" -ErrorAction SilentlyContinue).StartMode }
-    return $null
+    if (-not $svc) { return $null }
+    # PowerShell 5.1+ exposes StartType natively on the service object, so there is no need
+    # for a slow Win32_Service WMI/CIM round-trip. Values: Automatic, Manual, Disabled, etc.
+    return [string]$svc.StartType
 }
 
 function Get-PowerCfgAcValue {
@@ -107,7 +114,7 @@ function Write-Log {
     $item.Foreground = (New-Object Windows.Media.SolidColorBrush (
         [Windows.Media.ColorConverter]::ConvertFromString($colors[$Kind])
     ))
-    $script:lstLog.Items.Add($item) | Out-Null
+    [void]($script:lstLog.Items.Add($item))
     if ($script:logScroll) { $script:logScroll.ScrollToEnd() }
 }
 
@@ -177,7 +184,7 @@ $Tweaks = @(
         Desc='Brings back the full Windows 10 context menu on Windows 11.'
         Check={ Test-Path 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32' }
         Apply={ $k='HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32'
-                New-Item $k -Force | Out-Null; Set-ItemProperty -Path $k -Name '(Default)' -Value '' -Force }
+                [void](New-Item $k -Force); Set-ItemProperty -Path $k -Name '(Default)' -Value '' -Force }
         Undo={ Remove-Item 'HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}' -Recurse -Force -ErrorAction SilentlyContinue }
     }
     [pscustomobject]@{
@@ -242,8 +249,8 @@ $Tweaks = @(
         Id='tw_hibernate'; Category='Tweaks'; Name='Disable Hibernation'
         Desc='Turns off hibernation and deletes hiberfil.sys to reclaim disk space.'
         Check={ -not (Test-Path "$env:SystemDrive\hiberfil.sys") }
-        Apply={ powercfg.exe -h off | Out-Null }
-        Undo={ powercfg.exe -h on | Out-Null }
+        Apply={ [void](powercfg.exe -h off) }
+        Undo={ [void](powercfg.exe -h on) }
     }
     [pscustomobject]@{
         Id='tw_endtask'; Category='Tweaks'; Name='Enable "End Task" on Right-Click'; Recommended=$true; ExplorerRestart=$true
@@ -294,7 +301,7 @@ $Tweaks = @(
         }
         Apply={
             $appr='HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
-            if (-not (Test-Path $appr)) { New-Item $appr -Force | Out-Null }
+            if (-not (Test-Path $appr)) { [void](New-Item $appr -Force) }
             $runKeys=@('HKCU:\Software\Microsoft\Windows\CurrentVersion\Run',
                        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run')
             $targets=@('Discord','Spotify','Steam','EpicGamesLauncher','*Teams*','OneDrive','Adobe*','iCUE',
@@ -333,22 +340,22 @@ $Tweaks = @(
         Desc='Unlocks and activates the hidden Ultimate Performance power plan for maximum CPU clocks.'
         Check={ Test-UltimatePerformanceActive }
         Apply={ $o = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>$null
-                if ($o -match '([0-9a-fA-F-]{36})') { powercfg -setactive $Matches[1] | Out-Null }
-                else { powercfg -setactive e9a42b02-d5df-448d-aa00-03f14749eb61 | Out-Null } }
-        Undo={ powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e | Out-Null }
+                if ($o -match '([0-9a-fA-F-]{36})') { [void](powercfg -setactive $Matches[1]) }
+                else { [void](powercfg -setactive e9a42b02-d5df-448d-aa00-03f14749eb61) } }
+        Undo={ [void](powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e) }
     }
     [pscustomobject]@{
         Id='r_unpark'; Category='Rust FPS'; Name='Disable CPU Core Parking'; Recommended=$true
         Desc='Keeps all CPU cores active instead of parking to save power. Reduces stutter in Rust.'
         Check={ (Get-PowerCfgAcValue 'SUB_PROCESSOR' '0cc5b647-c1df-4637-891a-dec35c318583') -eq 100 }
         Apply={ $g='0cc5b647-c1df-4637-891a-dec35c318583'
-                powercfg -setacvalueindex scheme_current sub_processor $g 100 | Out-Null
-                powercfg -setdcvalueindex scheme_current sub_processor $g 100 | Out-Null
-                powercfg -setactive scheme_current | Out-Null }
+                [void](powercfg -setacvalueindex scheme_current sub_processor $g 100)
+                [void](powercfg -setdcvalueindex scheme_current sub_processor $g 100)
+                [void](powercfg -setactive scheme_current) }
         Undo={ $g='0cc5b647-c1df-4637-891a-dec35c318583'
-               powercfg -setacvalueindex scheme_current sub_processor $g 10 | Out-Null
-               powercfg -setdcvalueindex scheme_current sub_processor $g 10 | Out-Null
-               powercfg -setactive scheme_current | Out-Null }
+               [void](powercfg -setacvalueindex scheme_current sub_processor $g 10)
+               [void](powercfg -setdcvalueindex scheme_current sub_processor $g 10)
+               [void](powercfg -setactive scheme_current) }
     }
     [pscustomobject]@{
         Id='r_paging'; Category='Rust FPS'; Name='Disable Paging Executive'; Recommended=$true
@@ -496,55 +503,55 @@ $Tweaks = @(
         Id='r_procstate'; Category='Rust FPS'; Name='Lock CPU at 100% (Min/Max Processor State)'; Recommended=$true
         Desc='Pins the minimum and maximum processor state to 100% so the CPU never down-clocks mid-fight. Improves frametime consistency and 1% lows. Raises idle temps/power slightly.'
         Check={ (Get-PowerCfgAcValue 'SUB_PROCESSOR' 'PROCTHROTTLEMIN') -eq 100 -and (Get-PowerCfgAcValue 'SUB_PROCESSOR' 'PROCTHROTTLEMAX') -eq 100 }
-        Apply={ powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100 | Out-Null
-                powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100 | Out-Null
-                powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 | Out-Null
-                powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 | Out-Null
-                powercfg -setactive scheme_current | Out-Null }
-        Undo={ powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 5 | Out-Null
-               powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMIN 5 | Out-Null
-               powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 | Out-Null
-               powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 | Out-Null
-               powercfg -setactive scheme_current | Out-Null }
+        Apply={ [void](powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100)
+                [void](powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100)
+                [void](powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100)
+                [void](powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100)
+                [void](powercfg -setactive scheme_current) }
+        Undo={ [void](powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 5)
+               [void](powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMIN 5)
+               [void](powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100)
+               [void](powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100)
+               [void](powercfg -setactive scheme_current) }
     }
     [pscustomobject]@{
         Id='r_usbsuspend'; Category='Rust FPS'; Name='Disable USB Selective Suspend'; Recommended=$true
         Desc='Stops Windows from power-cycling USB ports, which can cause mouse/keyboard micro-stutters and brief input dropouts. Lower, more consistent input latency.'
         Check={ (Get-PowerCfgAcValue 'SUB_USB' '48e6b7a6-50f5-4782-a5d4-53bb8f07e226') -eq 0 }
         Apply={ $g='48e6b7a6-50f5-4782-a5d4-53bb8f07e226'
-                powercfg -setacvalueindex scheme_current sub_usb $g 0 | Out-Null
-                powercfg -setdcvalueindex scheme_current sub_usb $g 0 | Out-Null
-                powercfg -setactive scheme_current | Out-Null }
+                [void](powercfg -setacvalueindex scheme_current sub_usb $g 0)
+                [void](powercfg -setdcvalueindex scheme_current sub_usb $g 0)
+                [void](powercfg -setactive scheme_current) }
         Undo={ $g='48e6b7a6-50f5-4782-a5d4-53bb8f07e226'
-               powercfg -setacvalueindex scheme_current sub_usb $g 1 | Out-Null
-               powercfg -setdcvalueindex scheme_current sub_usb $g 1 | Out-Null
-               powercfg -setactive scheme_current | Out-Null }
+               [void](powercfg -setacvalueindex scheme_current sub_usb $g 1)
+               [void](powercfg -setdcvalueindex scheme_current sub_usb $g 1)
+               [void](powercfg -setactive scheme_current) }
     }
     [pscustomobject]@{
         Id='r_diskoff'; Category='Rust FPS'; Name='Never Turn Off Disk'; Recommended=$true
         Desc='Sets the hard-disk idle timeout to Never so the drive never spins down or sleeps, preventing hitching when a game streams new assets.'
         Check={ (Get-PowerCfgAcValue 'SUB_DISK' '6738e2c4-e8a5-4a42-b16a-e040e769756e') -eq 0 }
         Apply={ $g='6738e2c4-e8a5-4a42-b16a-e040e769756e'
-                powercfg -setacvalueindex scheme_current sub_disk $g 0 | Out-Null
-                powercfg -setdcvalueindex scheme_current sub_disk $g 0 | Out-Null
-                powercfg -setactive scheme_current | Out-Null }
+                [void](powercfg -setacvalueindex scheme_current sub_disk $g 0)
+                [void](powercfg -setdcvalueindex scheme_current sub_disk $g 0)
+                [void](powercfg -setactive scheme_current) }
         Undo={ $g='6738e2c4-e8a5-4a42-b16a-e040e769756e'
-               powercfg -setacvalueindex scheme_current sub_disk $g 1200 | Out-Null
-               powercfg -setdcvalueindex scheme_current sub_disk $g 600 | Out-Null
-               powercfg -setactive scheme_current | Out-Null }
+               [void](powercfg -setacvalueindex scheme_current sub_disk $g 1200)
+               [void](powercfg -setdcvalueindex scheme_current sub_disk $g 600)
+               [void](powercfg -setactive scheme_current) }
     }
     [pscustomobject]@{
         Id='r_pcie'; Category='Rust FPS'; Name='Disable PCIe Link State Power Management'
         Desc='Turns off ASPM so the PCIe link to your GPU/NVMe never enters a low-power state. Lowers latency on desktops. On laptops this increases battery drain.'
         Check={ (Get-PowerCfgAcValue 'SUB_PCIEXPRESS' 'ee12f906-d277-404b-b6da-e5fa1a576df5') -eq 0 }
         Apply={ $g='ee12f906-d277-404b-b6da-e5fa1a576df5'
-                powercfg -setacvalueindex scheme_current sub_pciexpress $g 0 | Out-Null
-                powercfg -setdcvalueindex scheme_current sub_pciexpress $g 0 | Out-Null
-                powercfg -setactive scheme_current | Out-Null }
+                [void](powercfg -setacvalueindex scheme_current sub_pciexpress $g 0)
+                [void](powercfg -setdcvalueindex scheme_current sub_pciexpress $g 0)
+                [void](powercfg -setactive scheme_current) }
         Undo={ $g='ee12f906-d277-404b-b6da-e5fa1a576df5'
-               powercfg -setacvalueindex scheme_current sub_pciexpress $g 1 | Out-Null
-               powercfg -setdcvalueindex scheme_current sub_pciexpress $g 2 | Out-Null
-               powercfg -setactive scheme_current | Out-Null }
+               [void](powercfg -setacvalueindex scheme_current sub_pciexpress $g 1)
+               [void](powercfg -setdcvalueindex scheme_current sub_pciexpress $g 2)
+               [void](powercfg -setactive scheme_current) }
     }
     [pscustomobject]@{
         Id='r_visualfx'; Category='Rust FPS'; Name='Visual Effects -> Best Performance'; Recommended=$true; ExplorerRestart=$true
@@ -654,8 +661,8 @@ $Tweaks = @(
         Id='r_dyntick'; Category='Rust FPS'; Name='Disable Dynamic Tick'
         Desc='Disables the dynamic kernel timer tick (bcdedit disabledynamictick yes). Can smooth frametimes on some systems and is neutral on others. Fully reversible. Does NOT touch HPET/platform clock, which can cause stutter if changed.'
         Check={ $o = (bcdedit /enum '{current}' 2>$null | Out-String); $o -match 'disabledynamictick\s+Yes' }
-        Apply={ bcdedit /set disabledynamictick yes | Out-Null }
-        Undo={ bcdedit /deletevalue disabledynamictick | Out-Null }
+        Apply={ [void](bcdedit /set disabledynamictick yes) }
+        Undo={ [void](bcdedit /deletevalue disabledynamictick) }
     }
 #endregion
 #region DEBLOAT
@@ -676,12 +683,12 @@ $Tweaks = @(
                 '\Microsoft\Windows\Application Experience\ProgramDataUpdater',
                 '\Microsoft\Windows\Customer Experience Improvement Program\Consolidator',
                 '\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip' |
-                ForEach-Object { Disable-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue | Out-Null } }
+                ForEach-Object { [void](Disable-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue) } }
         Undo={ '\Microsoft\Windows\Application Experience\Microsoft Compatibility Appraiser',
                '\Microsoft\Windows\Application Experience\ProgramDataUpdater',
                '\Microsoft\Windows\Customer Experience Improvement Program\Consolidator',
                '\Microsoft\Windows\Customer Experience Improvement Program\UsbCeip' |
-               ForEach-Object { Enable-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue | Out-Null } }
+               ForEach-Object { [void](Enable-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue) } }
     }
     [pscustomobject]@{
         Id='db_consumer'; Category='Debloat'; Name='Disable Consumer Features'; Recommended=$true
@@ -717,7 +724,7 @@ $Tweaks = @(
                 try {
                     Get-AppxPackage -Name $a -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
                     Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $a } |
-                        ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null }
+                        ForEach-Object { [void](Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue) }
                     $removed++
                 } catch { }
                 Invoke-UiPump $window
@@ -773,7 +780,7 @@ $Tweaks = @(
         Check={ -not (Get-AppxPackage -Name 'Microsoft.YourPhone' -AllUsers -ErrorAction SilentlyContinue) }
         Apply={ Get-AppxPackage -Name 'Microsoft.YourPhone' -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
                 Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'Microsoft.YourPhone' } |
-                    ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null }
+                    ForEach-Object { [void](Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue) }
                 Write-Log 'Phone Link removed.' 'ok' }
         Undo={ Write-Log 'Reinstall Phone Link from the Microsoft Store if needed.' 'warn' }
     }
@@ -794,7 +801,7 @@ $Tweaks = @(
         Check={ (Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' 0) -eq 1 }
         Apply={ Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' 1
                 Set-Reg 'HKCU:\Software\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' 1
-                try { Disable-WindowsOptionalFeature -Online -FeatureName 'Recall' -NoRestart -ErrorAction SilentlyContinue | Out-Null } catch { } }
+                try { [void](Disable-WindowsOptionalFeature -Online -FeatureName 'Recall' -NoRestart -ErrorAction SilentlyContinue) } catch { } }
         Undo={ Remove-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis'
                Remove-RegValue 'HKCU:\Software\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' }
     }
@@ -833,6 +840,65 @@ $Tweaks = @(
     }
 #endregion
 )
+
+# ---- 4b. DISK CLEANER DATA + HELPERS ---------------------------------------
+# Chris-Titus-style junk sweep. Each task is either a set of folder Paths (optionally
+# filtered, optionally guarded by services to stop first) or a Special action.
+$CleanTasks = @(
+    [pscustomobject]@{ Id='cl_usertemp'; Name='User temp files';             Rec=$true;  Paths=@("$env:TEMP","$env:LOCALAPPDATA\Temp")
+        Desc='Temporary files in your user TEMP folders left behind by installers and apps. Safe to delete; anything in use is skipped.' }
+    [pscustomobject]@{ Id='cl_wintemp';  Name='Windows temp files';          Rec=$true;  Paths=@("$env:windir\Temp")
+        Desc='System-wide temporary files under the Windows Temp folder. Safe to clear.' }
+    [pscustomobject]@{ Id='cl_prefetch'; Name='Prefetch data';              Rec=$false; Paths=@("$env:windir\Prefetch")
+        Desc='Prefetch traces Windows uses to speed up app launches. Windows rebuilds these automatically, so clearing them rarely helps and can slow the next few launches.' }
+    [pscustomobject]@{ Id='cl_wu';       Name='Windows Update cache';        Rec=$true;  Paths=@("$env:windir\SoftwareDistribution\Download"); StopSvc=@('wuauserv','bits')
+        Desc='Downloaded Windows Update installers that are no longer needed. The update services are paused during cleanup and restarted afterward.' }
+    [pscustomobject]@{ Id='cl_delivery'; Name='Delivery Optimization files'; Rec=$true;  Paths=@("$env:windir\SoftwareDistribution\DeliveryOptimization")
+        Desc='Cached update files Windows keeps for peer sharing. Safe to remove.' }
+    [pscustomobject]@{ Id='cl_thumb';    Name='Thumbnail and icon cache';    Rec=$true;  Paths=@("$env:LOCALAPPDATA\Microsoft\Windows\Explorer"); Filter='thumbcache_*.db,iconcache_*.db'
+        Desc='Cached thumbnail and icon databases. Windows rebuilds them as needed.' }
+    [pscustomobject]@{ Id='cl_wer';      Name='Windows error reports';       Rec=$true;  Paths=@("$env:LOCALAPPDATA\Microsoft\Windows\WER","$env:ProgramData\Microsoft\Windows\WER")
+        Desc='Saved Windows Error Reporting data from past crashes. Safe to remove.' }
+    [pscustomobject]@{ Id='cl_dumps';    Name='Crash dumps and minidumps';   Rec=$true;  Paths=@("$env:LOCALAPPDATA\CrashDumps","$env:windir\Minidump")
+        Desc='Memory dump files written after application or system crashes. Safe to remove unless you are actively debugging a crash.' }
+    [pscustomobject]@{ Id='cl_cbs';      Name='Old CBS and Windows logs';    Rec=$false; Paths=@("$env:windir\Logs\CBS")
+        Desc='Component-servicing logs that can grow very large over time. Safe to remove.' }
+    [pscustomobject]@{ Id='cl_shader';   Name='GPU shader caches (rebuild on next launch)'; Rec=$true; Paths=@("$env:LOCALAPPDATA\D3DSCache","$env:LOCALAPPDATA\NVIDIA\DXCache","$env:LOCALAPPDATA\NVIDIA\GLCache","$env:LOCALAPPDATA\AMD\DxCache","$env:LOCALAPPDATA\AMD\DxcCache","$env:TEMP\NVIDIA Corporation\NV_Cache")
+        Desc='DirectX, NVIDIA and AMD shader caches. Clearing can fix shader-related stutter in games like Rust; they rebuild on the next launch, so expect a short one-time stutter afterward.' }
+    [pscustomobject]@{ Id='cl_inet';     Name='Internet cache (WinINet)';    Rec=$false; Paths=@("$env:LOCALAPPDATA\Microsoft\Windows\INetCache")
+        Desc='Cached web content from the legacy WinINet store. Safe to remove.' }
+    [pscustomobject]@{ Id='cl_recycle';  Name='Empty Recycle Bin';           Rec=$true;  Special='recycle'
+        Desc='Permanently empties the Recycle Bin. Deleted items cannot be recovered afterward.' }
+    [pscustomobject]@{ Id='cl_dns';      Name='Flush DNS resolver cache';    Rec=$false; Special='dns'
+        Desc='Clears the DNS resolver cache. Can fix stale or failing name lookups; does not free disk space.' }
+)
+
+function Format-Bytes {
+    param([double]$Bytes)
+    if ($Bytes -ge 1GB) { return ('{0:N2} GB' -f ($Bytes / 1GB)) }
+    if ($Bytes -ge 1MB) { return ('{0:N1} MB' -f ($Bytes / 1MB)) }
+    if ($Bytes -ge 1KB) { return ('{0:N0} KB' -f ($Bytes / 1KB)) }
+    return ("$([int]$Bytes) B")
+}
+
+function Get-CleanItems {
+    param($Task)
+    $items = New-Object System.Collections.Generic.List[object]
+    if ($Task.PSObject.Properties.Name -contains 'Special') { return ,$items }
+    foreach ($p in $Task.Paths) {
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        # SilentlyContinue here is correct, not error masking: scanning junk routinely hits
+        # locked or access-denied items and those are meant to be skipped, not reported as failures.
+        if (($Task.PSObject.Properties.Name -contains 'Filter') -and $Task.Filter) {
+            foreach ($pat in ($Task.Filter -split ',')) {
+                foreach ($f in (Get-ChildItem -LiteralPath $p -Filter $pat.Trim() -File -Force -ErrorAction SilentlyContinue)) { $items.Add($f) }
+            }
+        } else {
+            foreach ($f in (Get-ChildItem -LiteralPath $p -Recurse -File -Force -ErrorAction SilentlyContinue)) { $items.Add($f) }
+        }
+    }
+    return ,$items
+}
 
 # ---- 5. HARDWARE SCANNER ---------------------------------------------------
 function Get-HardwareAdvice {
@@ -1119,6 +1185,27 @@ $XAML = @"
       <Setter Property="Padding" Value="12"/>
       <Setter Property="MaxWidth" Value="340"/>
     </Style>
+
+    <Style TargetType="ProgressBar">
+      <Setter Property="Height" Value="16"/>
+      <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+      <Setter Property="Background" Value="#0D0F14"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ProgressBar">
+            <Border Background="{TemplateBinding Background}" BorderBrush="{StaticResource BorderClr}"
+                    BorderThickness="1" CornerRadius="8">
+              <Grid ClipToBounds="True">
+                <Border x:Name="PART_Track"/>
+                <Border x:Name="PART_Indicator" HorizontalAlignment="Left" CornerRadius="8"
+                        Background="{TemplateBinding Foreground}"/>
+              </Grid>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
   </Window.Resources>
 
   <Border Background="#030405" BorderBrush="#181B24" BorderThickness="1" CornerRadius="20">
@@ -1147,6 +1234,7 @@ $XAML = @"
               <RadioButton x:Name="navTweaks" Style="{StaticResource NavRadio}" Content="Performance Tweaks" GroupName="Nav"/>
               <RadioButton x:Name="navRust" Style="{StaticResource NavRadio}" Content="Rust FPS Engine" GroupName="Nav"/>
               <RadioButton x:Name="navDebloat" Style="{StaticResource NavRadio}" Content="Debloat Controls" GroupName="Nav"/>
+              <RadioButton x:Name="navCleaner" Style="{StaticResource NavRadio}" Content="Disk Cleaner" GroupName="Nav"/>
               <RadioButton x:Name="navHardware" Style="{StaticResource NavRadio}" Content="Hardware Scanner" GroupName="Nav"/>
             </StackPanel>
 
@@ -1233,9 +1321,44 @@ $XAML = @"
                   </ScrollViewer>
                 </Border>
               </Grid>
+
+              <Grid x:Name="viewCleaner" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="*"/>
+                  <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Text="Sweep out junk files, caches, and logs. Click Scan Sizes to estimate first, tick what to remove, then Clean Selected. Recycle Bin contents are deleted permanently."
+                           Foreground="{StaticResource TextMuted}" FontSize="13" TextWrapping="Wrap" Margin="0,0,0,14"/>
+
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,12">
+                  <Button x:Name="btnCleanScan" Style="{StaticResource DeckButton}" Content="Scan Sizes"/>
+                  <Button x:Name="btnCleanRec" Style="{StaticResource DeckButton}" Content="Select Recommended" Margin="8,0,0,0"/>
+                  <Button x:Name="btnCleanNone" Style="{StaticResource DeckButton}" Content="Clear" Margin="8,0,0,0"/>
+                  <Button x:Name="btnCleanRun" Style="{StaticResource DangerButton}" Content="CLEAN SELECTED" Margin="8,0,0,0"/>
+                </StackPanel>
+
+                <Border Grid.Row="2" Style="{StaticResource SoftCard}" Padding="6">
+                  <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="pnlClean"/>
+                  </ScrollViewer>
+                </Border>
+
+                <Border Grid.Row="3" Style="{StaticResource SoftCard}" Margin="0,12,0,0" Padding="16,12">
+                  <StackPanel>
+                    <TextBlock x:Name="txtCleanStatus" Foreground="{StaticResource TextMuted}" FontSize="12"
+                               Text="Idle. Tick items and click Clean Selected."/>
+                    <ProgressBar x:Name="barClean" Minimum="0" Maximum="100" Value="0" Margin="0,10,0,0"/>
+                    <TextBlock x:Name="txtCleanTotal" Foreground="{StaticResource Accent}" FontSize="15" FontWeight="SemiBold"
+                               Margin="0,10,0,0" Text=""/>
+                  </StackPanel>
+                </Border>
+              </Grid>
             </Grid>
 
-            <Border Grid.Row="2" BorderBrush="{StaticResource BorderClr}" BorderThickness="0,1,0,0"
+            <Border x:Name="actionBar" Grid.Row="2" BorderBrush="{StaticResource BorderClr}" BorderThickness="0,1,0,0"
                     Background="#4406080C" CornerRadius="0,0,16,16" Padding="20,14">
               <DockPanel LastChildFill="False">
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
@@ -1293,7 +1416,7 @@ function New-Meteor {
     $rect.Fill = $grad
     [Windows.Controls.Canvas]::SetLeft($rect, 0)
     [Windows.Controls.Canvas]::SetTop($rect, 0)
-    $m.Children.Add($rect) | Out-Null
+    [void]($m.Children.Add($rect))
 
     $head = New-Object Windows.Shapes.Ellipse
     $hr = if ($isOrange) { 4.2 } else { 3.0 }
@@ -1313,7 +1436,7 @@ function New-Meteor {
 
     [Windows.Controls.Canvas]::SetLeft($head, $len - $hr)
     [Windows.Controls.Canvas]::SetTop($head, ($thk / 2) - $hr)
-    $m.Children.Add($head) | Out-Null
+    [void]($m.Children.Add($head))
 
     $rot = New-Object Windows.Media.RotateTransform ($angle, 0, 0)
     $tt  = New-Object Windows.Media.TranslateTransform
@@ -1361,12 +1484,22 @@ function Build-Sky {
         $s.Opacity = $script:rng.Next(6, 35) / 100.0
         [Windows.Controls.Canvas]::SetLeft($s, $script:rng.Next(0, [int]$w))
         [Windows.Controls.Canvas]::SetTop($s, $script:rng.Next(0, [int]$h))
-        $Canvas.Children.Add($s) | Out-Null
+        [void]($Canvas.Children.Add($s))
     }
 
     for ($i = 0; $i -lt 30; $i++) {
-        $Canvas.Children.Add((New-Meteor -W $w -H $h)) | Out-Null
+        [void]($Canvas.Children.Add((New-Meteor -W $w -H $h)))
     }
+}
+
+function Suspend-Sky {
+    # Clearing the canvas releases the running meteor animations so they stop burning GPU/CPU
+    # during the very optimization the tool is meant to help with. Resume-Sky rebuilds them after.
+    if ($SkyCanvas) { $SkyCanvas.Children.Clear() }
+}
+
+function Resume-Sky {
+    if ($SkyCanvas) { Build-Sky $SkyCanvas }
 }
 
 # ---- 8. LOAD UI ------------------------------------------------------------
@@ -1391,6 +1524,14 @@ $svOptions        = $window.FindName('svOptions')
 $txtHardwareAdvice = $window.FindName('txtHardwareAdvice')
 $btnRunDiagnostics = $window.FindName('btnRunDiagnostics')
 $SkyCanvas         = $window.FindName('SkyCanvas')
+$pnlClean          = $window.FindName('pnlClean')
+$barClean          = $window.FindName('barClean')
+$txtCleanStatus    = $window.FindName('txtCleanStatus')
+$txtCleanTotal     = $window.FindName('txtCleanTotal')
+$btnCleanScan      = $window.FindName('btnCleanScan')
+$btnCleanRun       = $window.FindName('btnCleanRun')
+$viewCleaner       = $window.FindName('viewCleaner')
+$actionBar         = $window.FindName('actionBar')
 
 # System info line
 try {
@@ -1404,6 +1545,9 @@ try {
 
 # ---- 9. UI STATE -----------------------------------------------------------
 $script:CheckBoxes = @{}
+# Selection persists here, independent of which tab's checkboxes currently exist. This is what
+# lets Apply Recommended select across EVERY section and lets Execute/Undo act on all of them.
+$script:SelectedIds = New-Object 'System.Collections.Generic.HashSet[string]'
 $script:AppliedBrush = New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString('#4ADE80'))
 $script:DefaultBrush = New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString('#FFFFFF'))
 $script:AccentBrush  = New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString('#22D3EE'))
@@ -1414,6 +1558,7 @@ $NavMap = [ordered]@{
     Tweaks            = @{ Title='Performance Tweaks'; Category='Tweaks';       View='options' }
     Rust              = @{ Title='Rust FPS Engine';    Category='Rust FPS';    View='options' }
     Debloat           = @{ Title='Debloat Controls';   Category='Debloat';     View='options' }
+    Cleaner           = @{ Title='Disk Cleaner';        Category=$null;       View='cleaner' }
     Hardware          = @{ Title='Hardware Scanner';   Category=$null;       View='hardware' }
 }
 
@@ -1435,9 +1580,13 @@ function New-TweakCheckBox {
     $cb = New-Object Windows.Controls.CheckBox
     $cb.Tag = $Tweak.Id
     $cb.Content = $Tweak.Name
-    if ($Tweak.PSObject.Properties.Name -contains 'Default' -and $Tweak.Default) {
-        $cb.IsChecked = $true
-    }
+
+    # The persistent set is the source of truth. Keep it in sync and restore checked state from it
+    # so switching tabs no longer wipes selections, and Apply Recommended can span all sections.
+    $tid = $Tweak.Id
+    $cb.Add_Checked({   [void]$script:SelectedIds.Add($tid) }.GetNewClosure())
+    $cb.Add_Unchecked({ [void]$script:SelectedIds.Remove($tid) }.GetNewClosure())
+    $cb.IsChecked = $script:SelectedIds.Contains($Tweak.Id)
 
     $badge = New-Object Windows.Controls.TextBlock
     $badge.Text = ' ?'
@@ -1450,8 +1599,8 @@ function New-TweakCheckBox {
     [Windows.Controls.ToolTipService]::SetInitialShowDelay($badge, 200)
     [Windows.Controls.ToolTipService]::SetShowDuration($badge, 60000)
 
-    $container.Children.Add($cb) | Out-Null
-    $container.Children.Add($badge) | Out-Null
+    [void]($container.Children.Add($cb))
+    [void]($container.Children.Add($badge))
     $card.Child = $container
 
     $script:CheckBoxes[$Tweak.Id] = $cb
@@ -1488,6 +1637,7 @@ function Show-Category {
     $viewDashboard.Visibility = 'Collapsed'
     $viewHardware.Visibility = 'Collapsed'
     $svOptions.Visibility = 'Collapsed'
+    $viewCleaner.Visibility = 'Collapsed'
     switch ($nav.View) {
         'dashboard' {
             $viewDashboard.Visibility = 'Visible'
@@ -1495,24 +1645,29 @@ function Show-Category {
         'hardware' {
             $viewHardware.Visibility = 'Visible'
         }
+        'cleaner' {
+            $viewCleaner.Visibility = 'Visible'
+        }
         'options' {
             $svOptions.Visibility = 'Visible'
             $pnlOptions.Children.Clear()
             $script:CheckBoxes.Clear()
             $categoryTweaks = $Tweaks | Where-Object { $_.Category -eq $nav.Category }
             foreach ($t in $categoryTweaks) {
-                $pnlOptions.Children.Add((New-TweakCheckBox $t)) | Out-Null
+                [void]$pnlOptions.Children.Add((New-TweakCheckBox $t))
                 Update-TweakAppliedState $t
             }
         }
     }
+    # The global EXECUTE/UNDO bar only applies to the tweak views. Hiding it elsewhere also
+    # prevents accidentally executing a cross-tab selection from the Dashboard or Cleaner.
+    $actionBar.Visibility = if ($nav.View -eq 'options') { 'Visible' } else { 'Collapsed' }
 }
 
 function Get-SelectedTweaks {
-    $Tweaks | Where-Object {
-        $cb = $script:CheckBoxes[$_.Id]
-        $cb -and $cb.IsChecked
-    }
+    # Reads the persistent set, so this reflects everything ticked across every section,
+    # not just the tab currently on screen.
+    $Tweaks | Where-Object { $script:SelectedIds.Contains($_.Id) }
 }
 
 function Invoke-ExecuteSelected {
@@ -1529,6 +1684,7 @@ function Invoke-ExecuteSelected {
 
     $selected = $selected | Sort-Object { if ($_.Id -eq 'tw_restore') { 0 } else { 1 } }
     $needExplorer = $false
+    Suspend-Sky
 
     foreach ($t in $selected) {
         try {
@@ -1544,6 +1700,7 @@ function Invoke-ExecuteSelected {
         Invoke-UiPump $window
     }
 
+    Resume-Sky
     if ($needExplorer) {
         Write-Log 'Restarting Explorer to apply interface changes...' 'accent'
         Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
@@ -1566,6 +1723,7 @@ function Invoke-UndoSelected {
     }
 
     $needExplorer = $false
+    Suspend-Sky
     foreach ($t in ($selected | Sort-Object Name)) {
         try {
             & $t.Undo
@@ -1580,6 +1738,7 @@ function Invoke-UndoSelected {
         Invoke-UiPump $window
     }
 
+    Resume-Sky
     if ($needExplorer) {
         Write-Log 'Restarting Explorer...' 'accent'
         Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
@@ -1590,13 +1749,192 @@ function Invoke-UndoSelected {
 }
 
 function Set-RecommendedSelection {
+    $count = 0
     foreach ($t in $Tweaks) {
-        if ($script:CheckBoxes.ContainsKey($t.Id)) {
-            $rec = ($t.PSObject.Properties.Name -contains 'Recommended') -and $t.Recommended
-            $script:CheckBoxes[$t.Id].IsChecked = [bool]$rec
-        }
+        $rec = ($t.PSObject.Properties.Name -contains 'Recommended') -and $t.Recommended
+        if (-not $rec) { continue }
+        [void]$script:SelectedIds.Add($t.Id)
+        $count++
+        # reflect immediately in any checkbox that happens to be on screen right now
+        if ($script:CheckBoxes.ContainsKey($t.Id)) { $script:CheckBoxes[$t.Id].IsChecked = $true }
     }
-    Write-Log 'Recommended tweaks selected in current view. Review, then EXECUTE.' 'accent'
+    Write-Log "Recommended selected across ALL sections: $count tweak(s). Switch tabs to review if you like, then EXECUTE SELECTED." 'accent'
+}
+
+function Build-CleanList {
+    $pnlClean.Children.Clear()
+    $script:CleanChecks = @{}
+    $script:CleanSizeLabels = @{}
+    foreach ($t in $CleanTasks) {
+        $row = New-Object Windows.Controls.Grid
+        $row.Margin = '6,4,10,4'
+        $c0 = New-Object Windows.Controls.ColumnDefinition; $c0.Width = '*'
+        $c1 = New-Object Windows.Controls.ColumnDefinition; $c1.Width = 'Auto'
+        $row.ColumnDefinitions.Add($c0)
+        $row.ColumnDefinitions.Add($c1)
+
+        $cb = New-Object Windows.Controls.CheckBox
+        $cb.Content = $t.Name
+        $cb.IsChecked = [bool]$t.Rec
+        $cb.ToolTip = $t.Desc
+        [Windows.Controls.Grid]::SetColumn($cb, 0)
+
+        $sz = New-Object Windows.Controls.TextBlock
+        $sz.Text = '-'
+        $sz.Foreground = New-ColorBrush '#64748B'
+        $sz.FontFamily = 'Consolas'
+        $sz.FontSize = 12
+        $sz.VerticalAlignment = 'Center'
+        [Windows.Controls.Grid]::SetColumn($sz, 1)
+
+        [void]$row.Children.Add($cb)
+        [void]$row.Children.Add($sz)
+        [void]$pnlClean.Children.Add($row)
+
+        $script:CleanChecks[$t.Id] = $cb
+        $script:CleanSizeLabels[$t.Id] = $sz
+    }
+}
+
+function Invoke-CleanScan {
+    $btnCleanScan.IsEnabled = $false
+    $txtCleanStatus.Text = 'Scanning...'
+    $barClean.Value = 0
+    $grand = 0.0
+    $n = $CleanTasks.Count
+    $i = 0
+    foreach ($t in $CleanTasks) {
+        $i++
+        $lbl = $script:CleanSizeLabels[$t.Id]
+        if ($t.PSObject.Properties.Name -contains 'Special') {
+            $lbl.Text = if ($t.Special -eq 'recycle') { '(varies)' } else { 'n/a' }
+        } else {
+            $lbl.Text = '...'
+            Invoke-UiPump $window
+            $size = (Get-CleanItems $t | Measure-Object Length -Sum).Sum
+            if (-not $size) { $size = 0 }
+            $grand += $size
+            $lbl.Text = (Format-Bytes $size)
+        }
+        $barClean.Value = [math]::Round(($i / $n) * 100)
+        Invoke-UiPump $window
+    }
+    $txtCleanStatus.Text = "Scan complete. About $(Format-Bytes $grand) can be reclaimed from the scanned items."
+    Write-Log "Disk Cleaner scan: about $(Format-Bytes $grand) reclaimable." 'accent'
+    $btnCleanScan.IsEnabled = $true
+}
+
+function Invoke-CleanSelected {
+    $selected = $CleanTasks | Where-Object { $script:CleanChecks[$_.Id].IsChecked }
+    if (-not $selected) {
+        $txtCleanStatus.Text = 'Nothing selected.'
+        Write-Log 'Disk Cleaner: nothing selected.' 'warn'
+        return
+    }
+
+    $confirm = [System.Windows.MessageBox]::Show(
+        'This permanently deletes the selected junk files and (if ticked) empties the Recycle Bin. Continue?',
+        'Rom-Opti Disk Cleaner',
+        [System.Windows.MessageBoxButton]::YesNo,
+        [System.Windows.MessageBoxImage]::Warning)
+    if ($confirm -ne [System.Windows.MessageBoxResult]::Yes) {
+        $txtCleanStatus.Text = 'Cleanup cancelled.'
+        Write-Log 'Disk Cleaner: cancelled by user.' 'warn'
+        return
+    }
+
+    $btnCleanRun.IsEnabled = $false
+    $btnCleanScan.IsEnabled = $false
+    Suspend-Sky
+    Write-Log '=== Disk Cleaner started ===' 'accent'
+
+    # Pre-count files so the progress bar reflects real work rather than guessing.
+    $fileMap = @{}
+    $totalFiles = 0
+    foreach ($t in $selected) {
+        if ($t.PSObject.Properties.Name -contains 'Special') { continue }
+        $list = Get-CleanItems $t
+        $fileMap[$t.Id] = $list
+        $totalFiles += $list.Count
+    }
+    if ($totalFiles -lt 1) { $totalFiles = 1 }
+
+    $barClean.Value = 0
+    $done = 0
+    $freed = 0.0
+
+    foreach ($t in $selected) {
+        $txtCleanStatus.Text = "Cleaning: $($t.Name)"
+        if ($script:CleanSizeLabels.ContainsKey($t.Id)) { $script:CleanSizeLabels[$t.Id].Text = 'cleaning...' }
+        Invoke-UiPump $window
+
+        if ($t.PSObject.Properties.Name -contains 'Special') {
+            switch ($t.Special) {
+                'recycle' {
+                    try { Clear-RecycleBin -Force -ErrorAction Stop; Write-Log '[OK]   Recycle Bin emptied.' 'ok' }
+                    catch { Write-Log '[OK]   Recycle Bin already empty.' 'ok' }
+                    $script:CleanSizeLabels[$t.Id].Text = 'emptied'
+                }
+                'dns' {
+                    try { [void](ipconfig /flushdns); Write-Log '[OK]   DNS resolver cache flushed.' 'ok' }
+                    catch { Write-Log "[FAIL] DNS flush -> $($_.Exception.Message)" 'err' }
+                    $script:CleanSizeLabels[$t.Id].Text = 'flushed'
+                }
+            }
+            Invoke-UiPump $window
+            continue
+        }
+
+        $stopped = @()
+        if ($t.PSObject.Properties.Name -contains 'StopSvc') {
+            foreach ($svc in $t.StopSvc) {
+                try { Stop-Service -Name $svc -Force -ErrorAction Stop; $stopped += $svc } catch { }
+            }
+        }
+
+        $taskFreed = 0.0
+        $k = 0
+        foreach ($f in $fileMap[$t.Id]) {
+            try {
+                $len = $f.Length
+                Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
+                $taskFreed += $len
+                $freed += $len
+            } catch { }   # locked or in-use file - expected, skipped without lying about it
+            $done++
+            $k++
+            if (($k % 25) -eq 0) {
+                $barClean.Value = [math]::Min(100, [math]::Round(($done / $totalFiles) * 100))
+                $txtCleanTotal.Text = "Freed so far: $(Format-Bytes $freed)"
+                Invoke-UiPump $window
+            }
+        }
+
+        # Remove now-empty leftover folders inside each target path (best-effort).
+        foreach ($p in $t.Paths) {
+            if (Test-Path -LiteralPath $p) {
+                foreach ($d in (Get-ChildItem -LiteralPath $p -Directory -Force -ErrorAction SilentlyContinue)) {
+                    try { Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+                }
+            }
+        }
+
+        foreach ($svc in $stopped) { try { Start-Service -Name $svc -ErrorAction SilentlyContinue } catch { } }
+
+        if ($script:CleanSizeLabels.ContainsKey($t.Id)) { $script:CleanSizeLabels[$t.Id].Text = "freed $(Format-Bytes $taskFreed)" }
+        Write-Log "[OK]   $($t.Name): freed $(Format-Bytes $taskFreed)" 'ok'
+        $barClean.Value = [math]::Min(100, [math]::Round(($done / $totalFiles) * 100))
+        $txtCleanTotal.Text = "Freed so far: $(Format-Bytes $freed)"
+        Invoke-UiPump $window
+    }
+
+    $barClean.Value = 100
+    $txtCleanStatus.Text = "Done. Reclaimed $(Format-Bytes $freed)."
+    $txtCleanTotal.Text = "Total reclaimed: $(Format-Bytes $freed)"
+    Write-Log "=== Disk Cleaner finished - reclaimed $(Format-Bytes $freed) ===" 'accent'
+    Resume-Sky
+    $btnCleanRun.IsEnabled = $true
+    $btnCleanScan.IsEnabled = $true
 }
 
 # ---- 10. EVENT WIRING ------------------------------------------------------
@@ -1606,6 +1944,7 @@ $navRadios = @{
     Tweaks      = $window.FindName('navTweaks')
     Rust        = $window.FindName('navRust')
     Debloat     = $window.FindName('navDebloat')
+    Cleaner     = $window.FindName('navCleaner')
     Hardware    = $window.FindName('navHardware')
 }
 
@@ -1629,9 +1968,24 @@ $window.FindName('btnExecute').Add_Click({ Invoke-ExecuteSelected })
 $window.FindName('btnUndo').Add_Click({ Invoke-UndoSelected })
 $btnRunDiagnostics.Add_Click({ Get-HardwareAdvice -OutputBox $txtHardwareAdvice })
 
+$window.FindName('btnCleanScan').Add_Click({ Invoke-CleanScan })
+$window.FindName('btnCleanRun').Add_Click({ Invoke-CleanSelected })
+$window.FindName('btnCleanRec').Add_Click({
+    foreach ($t in $CleanTasks) { if ($script:CleanChecks.ContainsKey($t.Id)) { $script:CleanChecks[$t.Id].IsChecked = [bool]$t.Rec } }
+})
+$window.FindName('btnCleanNone').Add_Click({
+    foreach ($cb in $script:CleanChecks.Values) { $cb.IsChecked = $false }
+})
+
 # ---- 11. START -------------------------------------------------------------
 $window.Add_Loaded({
     Build-Sky $SkyCanvas
+    Build-CleanList
+    # Seed any Default tweaks (e.g. Create Restore Point) into the persistent selection set so
+    # they start ticked, just like before, but now in a way that survives tab switches.
+    foreach ($t in $Tweaks) {
+        if (($t.PSObject.Properties.Name -contains 'Default') -and $t.Default) { [void]$script:SelectedIds.Add($t.Id) }
+    }
     Show-Category 'Dashboard'
     Write-Log 'Rom-Opti v3 ready. Run Hardware Scanner first for tailored advice.' 'accent'
     Write-Log 'Watch the sky — bright cyan meteors, with a rare orange streak.' 'info'
@@ -1649,4 +2003,4 @@ $window.Add_SizeChanged({
     if ($SkyCanvas.ActualWidth -gt 50) { Build-Sky $SkyCanvas }
 })
 
-$window.ShowDialog() | Out-Null
+[void]($window.ShowDialog())
