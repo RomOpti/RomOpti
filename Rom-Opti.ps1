@@ -23,6 +23,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 # ---- 2. ASSEMBLIES ---------------------------------------------------------
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'   # stop DISM/Appx cmdlets painting progress bars over the console
 $script:rng = New-Object System.Random
 
 # ---- 3. HELPERS ------------------------------------------------------------
@@ -68,6 +69,25 @@ function Get-ServiceStartup {
     # PowerShell 5.1+ exposes StartType natively on the service object, so there is no need
     # for a slow Win32_Service WMI/CIM round-trip. Values: Automatic, Manual, Disabled, etc.
     return [string]$svc.StartType
+}
+
+function Invoke-Native {
+    # Runs a native command (powercfg, bcdedit, ipconfig...) capturing BOTH stdout and stderr,
+    # and throws on a nonzero exit code so the per-tweak try/catch can log an honest [FAIL].
+    # Plain [void](command) only discards stdout - native stderr leaks to the console window
+    # and failures get silently logged as [OK], which is exactly what we refuse to do.
+    param([scriptblock]$Command)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'   # avoid the PS 5.1 trap where 2>&1 + Stop turns stderr text into a terminating error
+    $global:LASTEXITCODE = 0
+    try {
+        $out = (& $Command 2>&1 | ForEach-Object { "$_" }) -join ' '
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "$($Command.ToString().Trim()) -> $($out.Trim()) (exit $LASTEXITCODE)"
+    }
 }
 
 function Get-PowerCfgAcValue {
@@ -249,8 +269,8 @@ $Tweaks = @(
         Id='tw_hibernate'; Category='Tweaks'; Name='Disable Hibernation'
         Desc='Turns off hibernation and deletes hiberfil.sys to reclaim disk space.'
         Check={ -not (Test-Path "$env:SystemDrive\hiberfil.sys") }
-        Apply={ [void](powercfg.exe -h off) }
-        Undo={ [void](powercfg.exe -h on) }
+        Apply={ Invoke-Native { powercfg.exe -h off } }
+        Undo={ Invoke-Native { powercfg.exe -h on } }
     }
     [pscustomobject]@{
         Id='tw_endtask'; Category='Tweaks'; Name='Enable "End Task" on Right-Click'; Recommended=$true; ExplorerRestart=$true
@@ -340,22 +360,22 @@ $Tweaks = @(
         Desc='Unlocks and activates the hidden Ultimate Performance power plan for maximum CPU clocks.'
         Check={ Test-UltimatePerformanceActive }
         Apply={ $o = powercfg -duplicatescheme e9a42b02-d5df-448d-aa00-03f14749eb61 2>$null
-                if ($o -match '([0-9a-fA-F-]{36})') { [void](powercfg -setactive $Matches[1]) }
-                else { [void](powercfg -setactive e9a42b02-d5df-448d-aa00-03f14749eb61) } }
-        Undo={ [void](powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e) }
+                if ($o -match '([0-9a-fA-F-]{36})') { Invoke-Native { powercfg -setactive $Matches[1] } }
+                else { Invoke-Native { powercfg -setactive e9a42b02-d5df-448d-aa00-03f14749eb61 } } }
+        Undo={ Invoke-Native { powercfg -setactive 381b4222-f694-41f0-9685-ff5bb260df2e } }
     }
     [pscustomobject]@{
         Id='r_unpark'; Category='Rust FPS'; Name='Disable CPU Core Parking'; Recommended=$true
         Desc='Keeps all CPU cores active instead of parking to save power. Reduces stutter in Rust.'
         Check={ (Get-PowerCfgAcValue 'SUB_PROCESSOR' '0cc5b647-c1df-4637-891a-dec35c318583') -eq 100 }
         Apply={ $g='0cc5b647-c1df-4637-891a-dec35c318583'
-                [void](powercfg -setacvalueindex scheme_current sub_processor $g 100)
-                [void](powercfg -setdcvalueindex scheme_current sub_processor $g 100)
-                [void](powercfg -setactive scheme_current) }
+                Invoke-Native { powercfg -setacvalueindex scheme_current sub_processor $g 100 }
+                Invoke-Native { powercfg -setdcvalueindex scheme_current sub_processor $g 100 }
+                Invoke-Native { powercfg -setactive scheme_current } }
         Undo={ $g='0cc5b647-c1df-4637-891a-dec35c318583'
-               [void](powercfg -setacvalueindex scheme_current sub_processor $g 10)
-               [void](powercfg -setdcvalueindex scheme_current sub_processor $g 10)
-               [void](powercfg -setactive scheme_current) }
+               Invoke-Native { powercfg -setacvalueindex scheme_current sub_processor $g 10 }
+               Invoke-Native { powercfg -setdcvalueindex scheme_current sub_processor $g 10 }
+               Invoke-Native { powercfg -setactive scheme_current } }
     }
     [pscustomobject]@{
         Id='r_paging'; Category='Rust FPS'; Name='Disable Paging Executive'; Recommended=$true
@@ -503,55 +523,55 @@ $Tweaks = @(
         Id='r_procstate'; Category='Rust FPS'; Name='Lock CPU at 100% (Min/Max Processor State)'; Recommended=$true
         Desc='Pins the minimum and maximum processor state to 100% so the CPU never down-clocks mid-fight. Improves frametime consistency and 1% lows. Raises idle temps/power slightly.'
         Check={ (Get-PowerCfgAcValue 'SUB_PROCESSOR' 'PROCTHROTTLEMIN') -eq 100 -and (Get-PowerCfgAcValue 'SUB_PROCESSOR' 'PROCTHROTTLEMAX') -eq 100 }
-        Apply={ [void](powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100)
-                [void](powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100)
-                [void](powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100)
-                [void](powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100)
-                [void](powercfg -setactive scheme_current) }
-        Undo={ [void](powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 5)
-               [void](powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMIN 5)
-               [void](powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100)
-               [void](powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100)
-               [void](powercfg -setactive scheme_current) }
+        Apply={ Invoke-Native { powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100 }
+                Invoke-Native { powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100 }
+                Invoke-Native { powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 }
+                Invoke-Native { powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 }
+                Invoke-Native { powercfg -setactive scheme_current } }
+        Undo={ Invoke-Native { powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 5 }
+               Invoke-Native { powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMIN 5 }
+               Invoke-Native { powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 }
+               Invoke-Native { powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMAX 100 }
+               Invoke-Native { powercfg -setactive scheme_current } }
     }
     [pscustomobject]@{
         Id='r_usbsuspend'; Category='Rust FPS'; Name='Disable USB Selective Suspend'; Recommended=$true
         Desc='Stops Windows from power-cycling USB ports, which can cause mouse/keyboard micro-stutters and brief input dropouts. Lower, more consistent input latency.'
         Check={ (Get-PowerCfgAcValue 'SUB_USB' '48e6b7a6-50f5-4782-a5d4-53bb8f07e226') -eq 0 }
         Apply={ $g='48e6b7a6-50f5-4782-a5d4-53bb8f07e226'
-                [void](powercfg -setacvalueindex scheme_current sub_usb $g 0)
-                [void](powercfg -setdcvalueindex scheme_current sub_usb $g 0)
-                [void](powercfg -setactive scheme_current) }
+                Invoke-Native { powercfg -setacvalueindex scheme_current sub_usb $g 0 }
+                Invoke-Native { powercfg -setdcvalueindex scheme_current sub_usb $g 0 }
+                Invoke-Native { powercfg -setactive scheme_current } }
         Undo={ $g='48e6b7a6-50f5-4782-a5d4-53bb8f07e226'
-               [void](powercfg -setacvalueindex scheme_current sub_usb $g 1)
-               [void](powercfg -setdcvalueindex scheme_current sub_usb $g 1)
-               [void](powercfg -setactive scheme_current) }
+               Invoke-Native { powercfg -setacvalueindex scheme_current sub_usb $g 1 }
+               Invoke-Native { powercfg -setdcvalueindex scheme_current sub_usb $g 1 }
+               Invoke-Native { powercfg -setactive scheme_current } }
     }
     [pscustomobject]@{
         Id='r_diskoff'; Category='Rust FPS'; Name='Never Turn Off Disk'; Recommended=$true
         Desc='Sets the hard-disk idle timeout to Never so the drive never spins down or sleeps, preventing hitching when a game streams new assets.'
         Check={ (Get-PowerCfgAcValue 'SUB_DISK' '6738e2c4-e8a5-4a42-b16a-e040e769756e') -eq 0 }
         Apply={ $g='6738e2c4-e8a5-4a42-b16a-e040e769756e'
-                [void](powercfg -setacvalueindex scheme_current sub_disk $g 0)
-                [void](powercfg -setdcvalueindex scheme_current sub_disk $g 0)
-                [void](powercfg -setactive scheme_current) }
+                Invoke-Native { powercfg -setacvalueindex scheme_current sub_disk $g 0 }
+                Invoke-Native { powercfg -setdcvalueindex scheme_current sub_disk $g 0 }
+                Invoke-Native { powercfg -setactive scheme_current } }
         Undo={ $g='6738e2c4-e8a5-4a42-b16a-e040e769756e'
-               [void](powercfg -setacvalueindex scheme_current sub_disk $g 1200)
-               [void](powercfg -setdcvalueindex scheme_current sub_disk $g 600)
-               [void](powercfg -setactive scheme_current) }
+               Invoke-Native { powercfg -setacvalueindex scheme_current sub_disk $g 1200 }
+               Invoke-Native { powercfg -setdcvalueindex scheme_current sub_disk $g 600 }
+               Invoke-Native { powercfg -setactive scheme_current } }
     }
     [pscustomobject]@{
         Id='r_pcie'; Category='Rust FPS'; Name='Disable PCIe Link State Power Management'
         Desc='Turns off ASPM so the PCIe link to your GPU/NVMe never enters a low-power state. Lowers latency on desktops. On laptops this increases battery drain.'
         Check={ (Get-PowerCfgAcValue 'SUB_PCIEXPRESS' 'ee12f906-d277-404b-b6da-e5fa1a576df5') -eq 0 }
         Apply={ $g='ee12f906-d277-404b-b6da-e5fa1a576df5'
-                [void](powercfg -setacvalueindex scheme_current sub_pciexpress $g 0)
-                [void](powercfg -setdcvalueindex scheme_current sub_pciexpress $g 0)
-                [void](powercfg -setactive scheme_current) }
+                Invoke-Native { powercfg -setacvalueindex scheme_current sub_pciexpress $g 0 }
+                Invoke-Native { powercfg -setdcvalueindex scheme_current sub_pciexpress $g 0 }
+                Invoke-Native { powercfg -setactive scheme_current } }
         Undo={ $g='ee12f906-d277-404b-b6da-e5fa1a576df5'
-               [void](powercfg -setacvalueindex scheme_current sub_pciexpress $g 1)
-               [void](powercfg -setdcvalueindex scheme_current sub_pciexpress $g 2)
-               [void](powercfg -setactive scheme_current) }
+               Invoke-Native { powercfg -setacvalueindex scheme_current sub_pciexpress $g 1 }
+               Invoke-Native { powercfg -setdcvalueindex scheme_current sub_pciexpress $g 2 }
+               Invoke-Native { powercfg -setactive scheme_current } }
     }
     [pscustomobject]@{
         Id='r_visualfx'; Category='Rust FPS'; Name='Visual Effects -> Best Performance'; Recommended=$true; ExplorerRestart=$true
@@ -661,8 +681,9 @@ $Tweaks = @(
         Id='r_dyntick'; Category='Rust FPS'; Name='Disable Dynamic Tick'
         Desc='Disables the dynamic kernel timer tick (bcdedit disabledynamictick yes). Can smooth frametimes on some systems and is neutral on others. Fully reversible. Does NOT touch HPET/platform clock, which can cause stutter if changed.'
         Check={ $o = (bcdedit /enum '{current}' 2>$null | Out-String); $o -match 'disabledynamictick\s+Yes' }
-        Apply={ [void](bcdedit /set disabledynamictick yes) }
-        Undo={ [void](bcdedit /deletevalue disabledynamictick) }
+        Apply={ Invoke-Native { bcdedit /set disabledynamictick yes } }
+        Undo={ try { Invoke-Native { bcdedit /deletevalue disabledynamictick } }
+               catch { if ($_.Exception.Message -notmatch 'not found|element') { throw } } }
     }
 #endregion
 #region DEBLOAT
@@ -2011,7 +2032,7 @@ function Invoke-CleanSelected {
                     $script:CleanSizeLabels[$t.Id].Text = 'emptied'
                 }
                 'dns' {
-                    try { [void](ipconfig /flushdns); Write-Log '[OK]   DNS resolver cache flushed.' 'ok' }
+                    try { Invoke-Native { ipconfig /flushdns }; Write-Log '[OK]   DNS resolver cache flushed.' 'ok' }
                     catch { Write-Log "[FAIL] DNS flush -> $($_.Exception.Message)" 'err' }
                     $script:CleanSizeLabels[$t.Id].Text = 'flushed'
                 }
