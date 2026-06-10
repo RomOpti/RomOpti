@@ -891,10 +891,18 @@ function Get-CleanItems {
         # locked or access-denied items and those are meant to be skipped, not reported as failures.
         if (($Task.PSObject.Properties.Name -contains 'Filter') -and $Task.Filter) {
             foreach ($pat in ($Task.Filter -split ',')) {
-                foreach ($f in (Get-ChildItem -LiteralPath $p -Filter $pat.Trim() -File -Force -ErrorAction SilentlyContinue)) { $items.Add($f) }
+                foreach ($f in (Get-ChildItem -LiteralPath $p -Filter $pat.Trim() -File -Force -ErrorAction SilentlyContinue)) {
+                    $items.Add($f)
+                    if (($items.Count % 400) -eq 0 -and $window) { Invoke-UiPump $window }
+                }
             }
         } else {
-            foreach ($f in (Get-ChildItem -LiteralPath $p -Recurse -File -Force -ErrorAction SilentlyContinue)) { $items.Add($f) }
+            foreach ($f in (Get-ChildItem -LiteralPath $p -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+                $items.Add($f)
+                # Keep the window alive while enumerating huge folders (user temp can hold
+                # tens of thousands of files) so the UI never appears frozen mid-scan.
+                if (($items.Count % 400) -eq 0 -and $window) { Invoke-UiPump $window }
+            }
         }
     }
     return ,$items
@@ -1170,13 +1178,6 @@ $XAML = @"
       <Setter Property="Padding" Value="16"/>
     </Style>
 
-    <Style TargetType="CheckBox">
-      <Setter Property="Foreground" Value="{StaticResource TextWhite}"/>
-      <Setter Property="FontSize" Value="13"/>
-      <Setter Property="Margin" Value="0,6,16,6"/>
-      <Setter Property="VerticalContentAlignment" Value="Center"/>
-    </Style>
-
     <Style TargetType="ToolTip">
       <Setter Property="Background" Value="#0A0B0F"/>
       <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
@@ -1205,6 +1206,82 @@ $XAML = @"
           </ControlTemplate>
         </Setter.Value>
       </Setter>
+    </Style>
+
+    <Style TargetType="CheckBox">
+      <Setter Property="Foreground" Value="{StaticResource TextWhite}"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Margin" Value="0,6,16,6"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <StackPanel Orientation="Horizontal" Background="Transparent">
+              <Border x:Name="box" Width="18" Height="18" CornerRadius="5" BorderThickness="1.5"
+                      BorderBrush="#3A4150" Background="#10131A" VerticalAlignment="Center">
+                <Path x:Name="check" Data="M 4,9.5 L 7.5,13 L 14,5" Stroke="#06090D" StrokeThickness="2.6"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                      Visibility="Collapsed"/>
+              </Border>
+              <ContentPresenter Margin="10,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+            </StackPanel>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="box" Property="Background" Value="{StaticResource Accent}"/>
+                <Setter TargetName="box" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                <Setter TargetName="check" Property="Visibility" Value="Visible"/>
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="box" Property="BorderBrush" Value="{StaticResource Accent}"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.4"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="ScrollBar">
+      <Setter Property="Width" Value="8"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ScrollBar">
+            <Grid Background="Transparent">
+              <Track x:Name="PART_Track">
+                <Track.Thumb>
+                  <Thumb>
+                    <Thumb.Template>
+                      <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="tb" Background="#262C3A" CornerRadius="4" Margin="1"/>
+                        <ControlTemplate.Triggers>
+                          <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="tb" Property="Background" Value="#3A4358"/>
+                          </Trigger>
+                        </ControlTemplate.Triggers>
+                      </ControlTemplate>
+                    </Thumb.Template>
+                  </Thumb>
+                </Track.Thumb>
+              </Track>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="Orientation" Value="Vertical">
+                <Setter TargetName="PART_Track" Property="IsDirectionReversed" Value="True"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+      <Style.Triggers>
+        <Trigger Property="Orientation" Value="Horizontal">
+          <Setter Property="Width" Value="Auto"/>
+          <Setter Property="Height" Value="8"/>
+        </Trigger>
+      </Style.Triggers>
     </Style>
   </Window.Resources>
 
@@ -1551,6 +1628,8 @@ $script:SelectedIds = New-Object 'System.Collections.Generic.HashSet[string]'
 $script:AppliedBrush = New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString('#4ADE80'))
 $script:DefaultBrush = New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString('#FFFFFF'))
 $script:AccentBrush  = New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString('#22D3EE'))
+$script:CardBorderBrush = New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString('#181B24'))
+$script:CardHoverBrush  = New-Object Windows.Media.SolidColorBrush ([Windows.Media.ColorConverter]::ConvertFromString('#2E5F6B'))
 
 $NavMap = [ordered]@{
     Dashboard         = @{ Title='Dashboard';          Category=$null;       View='dashboard' }
@@ -1567,12 +1646,15 @@ function New-TweakCheckBox {
 
     $card = New-Object Windows.Controls.Border
     $card.Background = New-ColorBrush '#550A0B10'
-    $card.BorderBrush = New-ColorBrush '#181B24'
+    $card.BorderBrush = $script:CardBorderBrush
     $card.BorderThickness = '1'
     $card.CornerRadius = 12
     $card.Padding = '12,8'
     $card.Margin = '0,5,14,5'
     $card.Width = 352
+    # $this = sender (the Border) inside WPF event handlers; no closure scope traps here.
+    $card.Add_MouseEnter({ $this.BorderBrush = $script:CardHoverBrush })
+    $card.Add_MouseLeave({ $this.BorderBrush = $script:CardBorderBrush })
 
     $container = New-Object Windows.Controls.StackPanel
     $container.Orientation = 'Horizontal'
@@ -1768,30 +1850,63 @@ function Build-CleanList {
     $script:CleanChecks = @{}
     $script:CleanSizeLabels = @{}
     foreach ($t in $CleanTasks) {
+        $card = New-Object Windows.Controls.Border
+        $card.Background = New-ColorBrush '#550A0B10'
+        $card.BorderBrush = $script:CardBorderBrush
+        $card.BorderThickness = '1'
+        $card.CornerRadius = 10
+        $card.Padding = '14,10'
+        $card.Margin = '6,4,10,4'
+        # $this = sender (the Border) inside WPF event handlers; no closure scope traps here.
+        $card.Add_MouseEnter({ $this.BorderBrush = $script:CardHoverBrush })
+        $card.Add_MouseLeave({ $this.BorderBrush = $script:CardBorderBrush })
+
         $row = New-Object Windows.Controls.Grid
-        $row.Margin = '6,4,10,4'
         $c0 = New-Object Windows.Controls.ColumnDefinition; $c0.Width = '*'
         $c1 = New-Object Windows.Controls.ColumnDefinition; $c1.Width = 'Auto'
         $row.ColumnDefinitions.Add($c0)
         $row.ColumnDefinitions.Add($c1)
 
+        $left = New-Object Windows.Controls.StackPanel
+
         $cb = New-Object Windows.Controls.CheckBox
         $cb.Content = $t.Name
         $cb.IsChecked = [bool]$t.Rec
-        $cb.ToolTip = $t.Desc
-        [Windows.Controls.Grid]::SetColumn($cb, 0)
+        $cb.FontWeight = 'SemiBold'
+
+        $desc = New-Object Windows.Controls.TextBlock
+        $desc.Text = $t.Desc
+        $desc.Foreground = New-ColorBrush '#64748B'
+        $desc.FontSize = 11.5
+        $desc.TextWrapping = 'Wrap'
+        $desc.Margin = '28,4,12,0'
+
+        [void]$left.Children.Add($cb)
+        [void]$left.Children.Add($desc)
+        [Windows.Controls.Grid]::SetColumn($left, 0)
+
+        $szBadge = New-Object Windows.Controls.Border
+        $szBadge.Background = New-ColorBrush '#0D1117'
+        $szBadge.BorderBrush = $script:CardBorderBrush
+        $szBadge.BorderThickness = '1'
+        $szBadge.CornerRadius = 7
+        $szBadge.Padding = '10,4'
+        $szBadge.VerticalAlignment = 'Top'
+        $szBadge.MinWidth = 86
 
         $sz = New-Object Windows.Controls.TextBlock
         $sz.Text = '-'
-        $sz.Foreground = New-ColorBrush '#64748B'
+        $sz.Foreground = $script:AccentBrush
         $sz.FontFamily = 'Consolas'
-        $sz.FontSize = 12
-        $sz.VerticalAlignment = 'Center'
-        [Windows.Controls.Grid]::SetColumn($sz, 1)
+        $sz.FontSize = 12.5
+        $sz.HorizontalAlignment = 'Center'
+        $szBadge.Child = $sz
+        [Windows.Controls.Grid]::SetColumn($szBadge, 1)
 
-        [void]$row.Children.Add($cb)
-        [void]$row.Children.Add($sz)
-        [void]$pnlClean.Children.Add($row)
+        [void]$row.Children.Add($left)
+        [void]$row.Children.Add($szBadge)
+        $card.Child = $row
+        [void]$pnlClean.Children.Add($card)
 
         $script:CleanChecks[$t.Id] = $cb
         $script:CleanSizeLabels[$t.Id] = $sz
@@ -1800,30 +1915,42 @@ function Build-CleanList {
 
 function Invoke-CleanScan {
     $btnCleanScan.IsEnabled = $false
-    $txtCleanStatus.Text = 'Scanning...'
-    $barClean.Value = 0
-    $grand = 0.0
-    $n = $CleanTasks.Count
-    $i = 0
-    foreach ($t in $CleanTasks) {
-        $i++
-        $lbl = $script:CleanSizeLabels[$t.Id]
-        if ($t.PSObject.Properties.Name -contains 'Special') {
-            $lbl.Text = if ($t.Special -eq 'recycle') { '(varies)' } else { 'n/a' }
-        } else {
-            $lbl.Text = '...'
+    $btnCleanRun.IsEnabled = $false
+    try {
+        $barClean.Value = 0
+        $grand = 0.0
+        $n = $CleanTasks.Count
+        $i = 0
+        foreach ($t in $CleanTasks) {
+            $i++
+            $txtCleanStatus.Text = "Scanning ($i of $n): $($t.Name)"
+            $lbl = $script:CleanSizeLabels[$t.Id]
+            if ($t.PSObject.Properties.Name -contains 'Special') {
+                $lbl.Text = if ($t.Special -eq 'recycle') { '(varies)' } else { 'n/a' }
+            } else {
+                $lbl.Text = '...'
+                Invoke-UiPump $window
+                # Sum manually: Get-CleanItems returns one List object, and piping that single
+                # object into Measure-Object Length looks for .Length on the LIST (not the files),
+                # which throws under ErrorActionPreference=Stop and froze the whole window.
+                $size = 0.0
+                foreach ($f in (Get-CleanItems $t)) { $size += $f.Length }
+                $grand += $size
+                $lbl.Text = (Format-Bytes $size)
+            }
+            $barClean.Value = [math]::Round(($i / $n) * 100)
             Invoke-UiPump $window
-            $size = (Get-CleanItems $t | Measure-Object Length -Sum).Sum
-            if (-not $size) { $size = 0 }
-            $grand += $size
-            $lbl.Text = (Format-Bytes $size)
         }
-        $barClean.Value = [math]::Round(($i / $n) * 100)
-        Invoke-UiPump $window
+        $txtCleanStatus.Text = "Scan complete. About $(Format-Bytes $grand) can be reclaimed from the scanned items."
+        $txtCleanTotal.Text = "Reclaimable: $(Format-Bytes $grand)"
+        Write-Log "Disk Cleaner scan: about $(Format-Bytes $grand) reclaimable." 'accent'
+    } catch {
+        $txtCleanStatus.Text = "Scan failed: $($_.Exception.Message)"
+        Write-Log "[FAIL] Disk Cleaner scan -> $($_.Exception.Message)" 'err'
+    } finally {
+        $btnCleanScan.IsEnabled = $true
+        $btnCleanRun.IsEnabled = $true
     }
-    $txtCleanStatus.Text = "Scan complete. About $(Format-Bytes $grand) can be reclaimed from the scanned items."
-    Write-Log "Disk Cleaner scan: about $(Format-Bytes $grand) reclaimable." 'accent'
-    $btnCleanScan.IsEnabled = $true
 }
 
 function Invoke-CleanSelected {
@@ -1850,7 +1977,10 @@ function Invoke-CleanSelected {
     Suspend-Sky
     Write-Log '=== Disk Cleaner started ===' 'accent'
 
+    try {
     # Pre-count files so the progress bar reflects real work rather than guessing.
+    $txtCleanStatus.Text = 'Counting files...'
+    Invoke-UiPump $window
     $fileMap = @{}
     $totalFiles = 0
     foreach ($t in $selected) {
@@ -1874,7 +2004,10 @@ function Invoke-CleanSelected {
             switch ($t.Special) {
                 'recycle' {
                     try { Clear-RecycleBin -Force -ErrorAction Stop; Write-Log '[OK]   Recycle Bin emptied.' 'ok' }
-                    catch { Write-Log '[OK]   Recycle Bin already empty.' 'ok' }
+                    catch {
+                        if ($_.Exception.Message -match 'empty|0x8000FFFF') { Write-Log '[OK]   Recycle Bin already empty.' 'ok' }
+                        else { Write-Log "[FAIL] Recycle Bin -> $($_.Exception.Message)" 'err' }
+                    }
                     $script:CleanSizeLabels[$t.Id].Text = 'emptied'
                 }
                 'dns' {
@@ -1906,7 +2039,9 @@ function Invoke-CleanSelected {
             $done++
             $k++
             if (($k % 25) -eq 0) {
-                $barClean.Value = [math]::Min(100, [math]::Round(($done / $totalFiles) * 100))
+                $pct = [math]::Min(100, [math]::Round(($done / $totalFiles) * 100))
+                $barClean.Value = $pct
+                $txtCleanStatus.Text = "Cleaning ($pct%): $($t.Name)"
                 $txtCleanTotal.Text = "Freed so far: $(Format-Bytes $freed)"
                 Invoke-UiPump $window
             }
@@ -1934,9 +2069,15 @@ function Invoke-CleanSelected {
     $txtCleanStatus.Text = "Done. Reclaimed $(Format-Bytes $freed)."
     $txtCleanTotal.Text = "Total reclaimed: $(Format-Bytes $freed)"
     Write-Log "=== Disk Cleaner finished - reclaimed $(Format-Bytes $freed) ===" 'accent'
-    Resume-Sky
-    $btnCleanRun.IsEnabled = $true
-    $btnCleanScan.IsEnabled = $true
+    } catch {
+        $txtCleanStatus.Text = "Cleanup failed: $($_.Exception.Message)"
+        Write-Log "[FAIL] Disk Cleaner -> $($_.Exception.Message)" 'err'
+    } finally {
+        # No matter what happens, the window stays usable: sky back on, buttons back on.
+        Resume-Sky
+        $btnCleanRun.IsEnabled = $true
+        $btnCleanScan.IsEnabled = $true
+    }
 }
 
 # ---- 10. EVENT WIRING ------------------------------------------------------
