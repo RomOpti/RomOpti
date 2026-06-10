@@ -26,6 +26,64 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'   # stop DISM/Appx cmdlets painting progress bars over the console
 $script:rng = New-Object System.Random
 
+# ---- 2b. NATIVE HELPERS (timer resolution + standby memory purge) ----------
+$NativeSrc = @'
+using System;
+using System.Runtime.InteropServices;
+public static class RomNative {
+    [DllImport("ntdll.dll")]
+    private static extern uint NtSetTimerResolution(uint DesiredResolution, bool SetResolution, out uint CurrentResolution);
+    [DllImport("ntdll.dll")]
+    private static extern uint NtQueryTimerResolution(out uint Minimum, out uint Maximum, out uint Current);
+    [DllImport("ntdll.dll")]
+    private static extern uint NtSetSystemInformation(int SystemInformationClass, ref int SystemInformation, int SystemInformationLength);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool LookupPrivilegeValue(string lpSystemName, string lpName, out long lpLuid);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr TokenHandle, bool DisableAllPrivileges, ref TOKEN_PRIVILEGES NewState, int BufferLength, IntPtr PreviousState, IntPtr ReturnLength);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public int PrivilegeCount; public long Luid; public int Attributes; }
+
+    private static bool EnablePrivilege(string privilege) {
+        IntPtr token;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x0028, out token)) return false; // ADJUST_PRIVILEGES | QUERY
+        try {
+            long luid;
+            if (!LookupPrivilegeValue(null, privilege, out luid)) return false;
+            TOKEN_PRIVILEGES tp;
+            tp.PrivilegeCount = 1; tp.Luid = luid; tp.Attributes = 0x00000002; // SE_PRIVILEGE_ENABLED
+            return AdjustTokenPrivileges(token, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+        } finally { CloseHandle(token); }
+    }
+
+    // Holds a high-resolution system timer request (e.g. 0.5 ms) while this process lives.
+    public static uint SetTimerResolutionMs(double ms) {
+        uint cur; return NtSetTimerResolution((uint)(ms * 10000.0), true, out cur);
+    }
+    public static uint ReleaseTimerResolution() {
+        uint cur; return NtSetTimerResolution(156250, false, out cur);
+    }
+    public static double GetTimerResolutionMs() {
+        uint min, max, cur; NtQueryTimerResolution(out min, out max, out cur); return cur / 10000.0;
+    }
+    // ISLC-equivalent: purges the standby list so cached pages become free memory again.
+    public static uint PurgeStandbyList() {
+        EnablePrivilege("SeProfileSingleProcessPrivilege");
+        int cmd = 4; // MemoryPurgeStandbyList
+        return NtSetSystemInformation(80, ref cmd, 4); // SystemMemoryListInformation
+    }
+}
+'@
+try { Add-Type -TypeDefinition $NativeSrc -ErrorAction Stop; $script:NativeOk = $true }
+catch { $script:NativeOk = $false }
+
 # ---- 3. HELPERS ------------------------------------------------------------
 function Set-Reg {
     param([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord')
@@ -685,6 +743,57 @@ $Tweaks = @(
         Undo={ try { Invoke-Native { bcdedit /deletevalue disabledynamictick } }
                catch { if ($_.Exception.Message -notmatch 'not found|element') { throw } } }
     }
+    [pscustomobject]@{
+        Id='r_timerreg'; Category='Rust FPS'; Name='Global Timer Resolution Requests (Win11)'; Recommended=$true
+        Desc='Windows 11 ignores high-resolution timer requests from background processes, which breaks tools that hold a 0.5ms timer for smoother frametimes (including the Gaming Mode tab here). This restores the classic global behavior. Requires a reboot. Harmless on Windows 10.'
+        Check={ (Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'GlobalTimerResolutionRequests' 0) -eq 1 }
+        Apply={ Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'GlobalTimerResolutionRequests' 1 }
+        Undo={ Remove-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel' 'GlobalTimerResolutionRequests' }
+    }
+    [pscustomobject]@{
+        Id='r_gpupref'; Category='Rust FPS'; Name='Rust: High-Performance GPU Preference'; Recommended=$true
+        Desc='Registers RustClient.exe in Windows Graphics settings with the High Performance GPU preference, so Windows never schedules it onto an integrated GPU and gives it scheduling priority. Auto-detects your Rust install through Steam.'
+        Check={ $exe = Find-RustClient
+                $exe -and ((Get-RegValue 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' $exe '') -like 'GpuPreference=2*') }
+        Apply={ $exe = Find-RustClient
+                if (-not $exe) { throw 'RustClient.exe not found in any Steam library on this PC' }
+                Set-Reg 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' $exe 'GpuPreference=2;' 'String' }
+        Undo={ $exe = Find-RustClient
+               if ($exe) { Remove-RegValue 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' $exe } }
+    }
+    [pscustomobject]@{
+        Id='r_nicpower'; Category='Rust FPS'; Name='Disable Network Adapter Power Saving'; Recommended=$true
+        Desc='Stops Windows from powering down your network adapter to save energy, which causes packet jitter and ping spikes mid-game. Applied per physical adapter.'
+        Check={ -not (Get-NetAdapter -Physical -ErrorAction SilentlyContinue |
+                      Get-NetAdapterPowerManagement -ErrorAction SilentlyContinue |
+                      Where-Object { $_.AllowComputerToTurnOffDevice -eq 'Enabled' }) }
+        Apply={ foreach ($a in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+                    try { Set-NetAdapterPowerManagement -Name $a.Name -AllowComputerToTurnOffDevice Disabled -ErrorAction Stop }
+                    catch { Write-Log "[WARN] NIC power saving not changeable on $($a.Name): $($_.Exception.Message)" 'warn' }
+                } }
+        Undo={ foreach ($a in (Get-NetAdapter -Physical -ErrorAction SilentlyContinue)) {
+                   try { Set-NetAdapterPowerManagement -Name $a.Name -AllowComputerToTurnOffDevice Enabled -ErrorAction Stop } catch { }
+               } }
+    }
+    [pscustomobject]@{
+        Id='r_discordhw'; Category='Rust FPS'; Name='Disable Discord Hardware Acceleration'
+        Desc='Turns off hardware acceleration in Discord settings so it stops consuming GPU cycles while you game with voice chat open. Helps most on weaker GPUs. Close Discord before applying; takes effect on next Discord launch.'
+        Check={ $p = "$env:APPDATA\discord\settings.json"
+                if (-not (Test-Path -LiteralPath $p)) { return $false }
+                try { ((Get-Content -LiteralPath $p -Raw | ConvertFrom-Json).enableHardwareAcceleration) -eq $false } catch { $false } }
+        Apply={ $p = "$env:APPDATA\discord\settings.json"
+                if (-not (Test-Path -LiteralPath $p)) { throw 'Discord settings.json not found (is Discord installed?)' }
+                if (Get-Process -Name Discord -ErrorAction SilentlyContinue) { throw 'Close Discord first, then apply this tweak' }
+                $j = Get-Content -LiteralPath $p -Raw | ConvertFrom-Json
+                $j | Add-Member -NotePropertyName enableHardwareAcceleration -NotePropertyValue $false -Force
+                $j | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $p -Encoding UTF8 }
+        Undo={ $p = "$env:APPDATA\discord\settings.json"
+               if (-not (Test-Path -LiteralPath $p)) { return }
+               if (Get-Process -Name Discord -ErrorAction SilentlyContinue) { throw 'Close Discord first, then undo this tweak' }
+               $j = Get-Content -LiteralPath $p -Raw | ConvertFrom-Json
+               $j | Add-Member -NotePropertyName enableHardwareAcceleration -NotePropertyValue $true -Force
+               $j | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $p -Encoding UTF8 }
+    }
 #endregion
 #region DEBLOAT
     [pscustomobject]@{
@@ -927,6 +1036,64 @@ function Get-CleanItems {
         }
     }
     return ,$items
+}
+
+# ---- 4c. GAMING MODE DATA + HELPERS ----------------------------------------
+function Find-RustClient {
+    # Locates RustClient.exe by reading Steam's install path and every library folder.
+    if ($script:RustExeCache) { return $script:RustExeCache }
+    try { $steam = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -ErrorAction Stop).SteamPath } catch { return $null }
+    if (-not $steam) { return $null }
+    $steam = $steam -replace '/', '\'
+    $libs = @($steam)
+    $vdf = Join-Path $steam 'steamapps\libraryfolders.vdf'
+    if (Test-Path -LiteralPath $vdf) {
+        foreach ($m in [regex]::Matches((Get-Content -LiteralPath $vdf -Raw), '"path"\s+"([^"]+)"')) {
+            $libs += $m.Groups[1].Value.Replace('\\', '\')
+        }
+    }
+    foreach ($l in ($libs | Select-Object -Unique)) {
+        $p = Join-Path $l 'steamapps\common\Rust\RustClient.exe'
+        if (Test-Path -LiteralPath $p) { $script:RustExeCache = $p; return $p }
+    }
+    return $null
+}
+
+# Rust convar presets written to cfg\client.cfg (the same settings the F1 console persists).
+# These are official game settings - safe with EAC, applied next launch.
+$RustPresets = @{
+    max = [ordered]@{
+        'graphics.shadowdistance'='50';  'graphics.shadowquality'='0'; 'graphics.shadowlights'='0'
+        'graphics.parallax'='0';         'graphics.dof'='False';       'water.quality'='0'
+        'water.reflections'='0';         'effects.motionblur'='False'; 'effects.bloom'='False'
+        'effects.vignette'='False';      'effects.shafts'='False';     'gc.buffer'='4096'
+    }
+    comp = [ordered]@{
+        'graphics.shadowdistance'='100'; 'graphics.shadowquality'='1'; 'graphics.shadowlights'='1'
+        'graphics.parallax'='0';         'graphics.dof'='False';       'water.quality'='1'
+        'water.reflections'='0';         'effects.motionblur'='False'; 'effects.bloom'='False'
+        'effects.vignette'='False';      'effects.shafts'='False';     'gc.buffer'='4096'
+    }
+    bal = [ordered]@{
+        'graphics.shadowdistance'='150'; 'graphics.shadowquality'='1'; 'graphics.shadowlights'='2'
+        'graphics.parallax'='1';         'graphics.dof'='False';       'water.quality'='1'
+        'water.reflections'='1';         'effects.motionblur'='False'; 'effects.bloom'='True'
+        'effects.vignette'='False';      'effects.shafts'='True';      'gc.buffer'='2048'
+    }
+}
+
+# Services safe to SUSPEND while gaming and restore afterward (smarter than permanent disabling).
+$script:SuspendSvcList = @('SysMain','WSearch','DiagTrack','wuauserv','BITS','DoSvc','Spooler','MapsBroker','WerSvc','XblAuthManager','XblGameSave','XboxNetApiSvc','XboxGipSvc')
+$script:SuspendedSvcs = $null
+
+# Background apps the one-click killer can close. Steam is deliberately ABSENT: Rust runs under it.
+$KillGroups = [ordered]@{
+    Browsers = @('chrome','msedge','firefox','opera','brave','vivaldi')
+    OneDrive = @('OneDrive')
+    Epic     = @('EpicGamesLauncher','EpicWebHelper')
+    Spotify  = @('Spotify')
+    RGB      = @('iCUE','LightingService','ArmouryCrate.Service','ArmourySwAgent','RazerAppEngine','SteelSeriesGG')
+    Discord  = @('Discord')
 }
 
 # ---- 5. HARDWARE SCANNER ---------------------------------------------------
@@ -1333,6 +1500,7 @@ $XAML = @"
               <RadioButton x:Name="navRust" Style="{StaticResource NavRadio}" Content="Rust FPS Engine" GroupName="Nav"/>
               <RadioButton x:Name="navDebloat" Style="{StaticResource NavRadio}" Content="Debloat Controls" GroupName="Nav"/>
               <RadioButton x:Name="navCleaner" Style="{StaticResource NavRadio}" Content="Disk Cleaner" GroupName="Nav"/>
+              <RadioButton x:Name="navGaming" Style="{StaticResource NavRadio}" Content="Gaming Mode" GroupName="Nav"/>
               <RadioButton x:Name="navHardware" Style="{StaticResource NavRadio}" Content="Hardware Scanner" GroupName="Nav"/>
             </StackPanel>
 
@@ -1453,6 +1621,95 @@ $XAML = @"
                                Margin="0,10,0,0" Text=""/>
                   </StackPanel>
                 </Border>
+              </Grid>
+
+              <Grid x:Name="viewGaming" Visibility="Collapsed">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                  <StackPanel Margin="0,0,10,0">
+                    <TextBlock Foreground="{StaticResource TextMuted}" FontSize="13" TextWrapping="Wrap" Margin="0,0,0,14"
+                      Text="Live session boosters. Unlike the tweak tabs, these run WHILE you game and restore themselves afterward. Keep Rom-Opti open during your session."/>
+
+                    <Border Style="{StaticResource SoftCard}" Margin="0,0,0,12">
+                      <StackPanel>
+                        <TextBlock Text="High-Resolution Timer (0.5 ms)" FontWeight="SemiBold" Foreground="{StaticResource Accent}" FontSize="13"/>
+                        <TextBlock Margin="0,6,0,0" Foreground="{StaticResource TextMuted}" FontSize="12" TextWrapping="Wrap"
+                          Text="Holds the Windows system timer at 0.5 ms for tighter frametimes and input latency. Held only while Rom-Opti is open. On Windows 11, apply the Global Timer Resolution tweak in Rust FPS Engine and reboot first, or this cannot reach the game."/>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                          <Button x:Name="btnTimerToggle" Style="{StaticResource PrimaryButton}" Content="HOLD 0.5 MS"/>
+                          <TextBlock x:Name="txtTimerStatus" Foreground="{StaticResource TextMuted}" FontSize="12" VerticalAlignment="Center" Margin="14,0,0,0" Text=""/>
+                        </StackPanel>
+                      </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource SoftCard}" Margin="0,0,0,12">
+                      <StackPanel>
+                        <TextBlock Text="Standby Memory Cleaner" FontWeight="SemiBold" Foreground="{StaticResource Accent}" FontSize="13"/>
+                        <TextBlock Margin="0,6,0,0" Foreground="{StaticResource TextMuted}" FontSize="12" TextWrapping="Wrap"
+                          Text="Purges the Windows standby list (cached file pages) back to free memory - the same operation ISLC performs. Fixes the long-session stutter Rust develops as standby memory piles up."/>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                          <Button x:Name="btnPurgeNow" Style="{StaticResource DeckButton}" Content="Purge Now"/>
+                          <CheckBox x:Name="chkAutoPurge" Content="Auto-purge every 5 minutes" Margin="14,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                      </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource SoftCard}" Margin="0,0,0,12">
+                      <StackPanel>
+                        <TextBlock Text="Service Suspension" FontWeight="SemiBold" Foreground="{StaticResource Accent}" FontSize="13"/>
+                        <TextBlock Margin="0,6,0,0" Foreground="{StaticResource TextMuted}" FontSize="12" TextWrapping="Wrap"
+                          Text="Temporarily stops background services (SysMain, Windows Search, update scans, telemetry, Xbox services, print spooler) and restores their exact previous state when you click restore or close Rom-Opti. Printing is unavailable while suspended."/>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                          <Button x:Name="btnSvcSuspend" Style="{StaticResource PrimaryButton}" Content="SUSPEND SERVICES"/>
+                          <TextBlock x:Name="txtSvcStatus" Foreground="{StaticResource TextMuted}" FontSize="12" VerticalAlignment="Center" Margin="14,0,0,0" Text="Services running normally."/>
+                        </StackPanel>
+                      </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource SoftCard}" Margin="0,0,0,12">
+                      <StackPanel>
+                        <TextBlock Text="Close Background Apps" FontWeight="SemiBold" Foreground="{StaticResource Accent}" FontSize="13"/>
+                        <TextBlock Margin="0,6,0,0" Foreground="{StaticResource TextMuted}" FontSize="12" TextWrapping="Wrap"
+                          Text="Force-closes the selected resource hogs to free CPU, RAM and GPU for Rust. Steam is never touched (Rust runs under it). Save your browser work first - this is a force close."/>
+                        <WrapPanel Margin="0,10,0,0">
+                          <CheckBox x:Name="chkKillBrowsers" Content="Browsers" IsChecked="True"/>
+                          <CheckBox x:Name="chkKillOneDrive" Content="OneDrive" IsChecked="True"/>
+                          <CheckBox x:Name="chkKillEpic" Content="Epic Launcher" IsChecked="True"/>
+                          <CheckBox x:Name="chkKillSpotify" Content="Spotify"/>
+                          <CheckBox x:Name="chkKillRGB" Content="RGB Software"/>
+                          <CheckBox x:Name="chkKillDiscord" Content="Discord (leaves voice!)"/>
+                        </WrapPanel>
+                        <Button x:Name="btnKillApps" Style="{StaticResource DangerButton}" Content="CLOSE SELECTED APPS" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                      </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource SoftCard}" Margin="0,0,0,12">
+                      <StackPanel>
+                        <TextBlock Text="Auto-Boost Rust Priority" FontWeight="SemiBold" Foreground="{StaticResource Accent}" FontSize="13"/>
+                        <TextBlock Margin="0,6,0,0" Foreground="{StaticResource TextMuted}" FontSize="12" TextWrapping="Wrap"
+                          Text="Watches for RustClient.exe and raises it to High process priority the moment it starts - the same action as Task Manager, automated. Improves 1% lows when background load competes for CPU."/>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                          <CheckBox x:Name="chkRustBoost" Content="Watch for Rust and boost automatically"/>
+                          <TextBlock x:Name="txtRustBoost" Foreground="{StaticResource TextMuted}" FontSize="12" VerticalAlignment="Center" Margin="14,0,0,0" Text=""/>
+                        </StackPanel>
+                      </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource SoftCard}" Margin="0,0,0,12">
+                      <StackPanel>
+                        <TextBlock Text="Rust Config Presets (client.cfg)" FontWeight="SemiBold" Foreground="{StaticResource Accent}" FontSize="13"/>
+                        <TextBlock Margin="0,6,0,0" Foreground="{StaticResource TextMuted}" FontSize="12" TextWrapping="Wrap"
+                          Text="Writes proven FPS convars (shadows, water, post-effects, gc.buffer) straight into your Rust client.cfg - the same settings the F1 console saves, so they are EAC-safe. A backup is created on first use. Rust must be closed; applies on next launch. Max FPS strips everything; Competitive keeps short shadows for PvP info; Balanced keeps it looking decent."/>
+                        <WrapPanel Margin="0,10,0,0">
+                          <Button x:Name="btnCfgMax" Style="{StaticResource DeckButton}" Content="Max FPS"/>
+                          <Button x:Name="btnCfgComp" Style="{StaticResource DeckButton}" Content="Competitive" Margin="8,0,0,0"/>
+                          <Button x:Name="btnCfgBal" Style="{StaticResource DeckButton}" Content="Balanced" Margin="8,0,0,0"/>
+                          <Button x:Name="btnCfgRestore" Style="{StaticResource DangerButton}" Content="Restore Backup" Margin="8,0,0,0"/>
+                        </WrapPanel>
+                        <TextBlock x:Name="txtCfgStatus" Foreground="{StaticResource TextMuted}" FontSize="12" Margin="0,8,0,0" Text=""/>
+                      </StackPanel>
+                    </Border>
+                  </StackPanel>
+                </ScrollViewer>
               </Grid>
             </Grid>
 
@@ -1630,6 +1887,17 @@ $btnCleanScan      = $window.FindName('btnCleanScan')
 $btnCleanRun       = $window.FindName('btnCleanRun')
 $viewCleaner       = $window.FindName('viewCleaner')
 $actionBar         = $window.FindName('actionBar')
+$viewGaming        = $window.FindName('viewGaming')
+$btnTimerToggle    = $window.FindName('btnTimerToggle')
+$txtTimerStatus    = $window.FindName('txtTimerStatus')
+$btnPurgeNow       = $window.FindName('btnPurgeNow')
+$chkAutoPurge      = $window.FindName('chkAutoPurge')
+$btnSvcSuspend     = $window.FindName('btnSvcSuspend')
+$txtSvcStatus      = $window.FindName('txtSvcStatus')
+$btnKillApps       = $window.FindName('btnKillApps')
+$chkRustBoost      = $window.FindName('chkRustBoost')
+$txtRustBoost      = $window.FindName('txtRustBoost')
+$txtCfgStatus      = $window.FindName('txtCfgStatus')
 
 # System info line
 try {
@@ -1659,6 +1927,7 @@ $NavMap = [ordered]@{
     Rust              = @{ Title='Rust FPS Engine';    Category='Rust FPS';    View='options' }
     Debloat           = @{ Title='Debloat Controls';   Category='Debloat';     View='options' }
     Cleaner           = @{ Title='Disk Cleaner';        Category=$null;       View='cleaner' }
+    Gaming            = @{ Title='Gaming Mode';          Category=$null;       View='gaming' }
     Hardware          = @{ Title='Hardware Scanner';   Category=$null;       View='hardware' }
 }
 
@@ -1743,6 +2012,7 @@ function Show-Category {
     $viewHardware.Visibility = 'Collapsed'
     $svOptions.Visibility = 'Collapsed'
     $viewCleaner.Visibility = 'Collapsed'
+    $viewGaming.Visibility = 'Collapsed'
     switch ($nav.View) {
         'dashboard' {
             $viewDashboard.Visibility = 'Visible'
@@ -1752,6 +2022,9 @@ function Show-Category {
         }
         'cleaner' {
             $viewCleaner.Visibility = 'Visible'
+        }
+        'gaming' {
+            $viewGaming.Visibility = 'Visible'
         }
         'options' {
             $svOptions.Visibility = 'Visible'
@@ -2101,6 +2374,189 @@ function Invoke-CleanSelected {
     }
 }
 
+# ---- 9b. GAMING MODE ENGINE -------------------------------------------------
+function Update-TimerStatus {
+    if (-not $script:NativeOk) { $txtTimerStatus.Text = 'Native helpers failed to load.'; return }
+    $txtTimerStatus.Text = "Current system timer: $([RomNative]::GetTimerResolutionMs().ToString('0.###')) ms"
+}
+
+function Invoke-TimerToggle {
+    if (-not $script:NativeOk) { Write-Log '[FAIL] Timer control unavailable (native helpers did not compile).' 'err'; return }
+    if ($script:TimerHeld) {
+        [void][RomNative]::ReleaseTimerResolution()
+        $script:TimerHeld = $false
+        $btnTimerToggle.Content = 'HOLD 0.5 MS'
+        Write-Log 'High-resolution timer released.' 'info'
+    } else {
+        $r = [RomNative]::SetTimerResolutionMs(0.5)
+        if ($r -eq 0) {
+            $script:TimerHeld = $true
+            $btnTimerToggle.Content = 'RELEASE TIMER'
+            Write-Log '[OK]   Holding 0.5 ms system timer while Rom-Opti stays open.' 'ok'
+        } else {
+            Write-Log "[FAIL] Timer request returned NTSTATUS 0x$($r.ToString('X8'))" 'err'
+        }
+    }
+    Update-TimerStatus
+}
+
+function Invoke-PurgeStandby {
+    if (-not $script:NativeOk) { Write-Log '[FAIL] Standby purge unavailable (native helpers did not compile).' 'err'; return }
+    try {
+        $before = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
+        $r = [RomNative]::PurgeStandbyList()
+        $after = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory * 1KB
+        if ($r -eq 0) {
+            Write-Log "[OK]   Standby memory purged - $(Format-Bytes ([math]::Max(0, $after - $before))) returned to free." 'ok'
+        } else {
+            Write-Log "[FAIL] Standby purge returned NTSTATUS 0x$($r.ToString('X8'))" 'err'
+        }
+    } catch { Write-Log "[FAIL] Standby purge -> $($_.Exception.Message)" 'err' }
+}
+
+function Invoke-SvcSuspendToggle {
+    if ($script:SuspendedSvcs) {
+        # RESTORE: put every service back exactly as it was.
+        $restored = 0
+        foreach ($name in $script:SuspendedSvcs.Keys) {
+            $info = $script:SuspendedSvcs[$name]
+            try {
+                if ($info.Startup -in @('Automatic','Manual','Disabled')) {
+                    Set-Service -Name $name -StartupType $info.Startup -ErrorAction Stop
+                }
+                if ($info.Running) { Start-Service -Name $name -ErrorAction SilentlyContinue }
+                $restored++
+            } catch { Write-Log "[WARN] Could not fully restore service $name -> $($_.Exception.Message)" 'warn' }
+        }
+        $script:SuspendedSvcs = $null
+        $btnSvcSuspend.Content = 'SUSPEND SERVICES'
+        $txtSvcStatus.Text = "Restored $restored service(s) to their previous state."
+        Write-Log "[OK]   Service suspension lifted - $restored service(s) restored." 'ok'
+    } else {
+        # SUSPEND: remember each service's exact state, then disable + stop it.
+        $script:SuspendedSvcs = @{}
+        foreach ($name in $script:SuspendSvcList) {
+            $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+            if (-not $svc) { continue }
+            $script:SuspendedSvcs[$name] = @{ Startup = (Get-ServiceStartup $name); Running = ($svc.Status -eq 'Running') }
+            try {
+                Set-Service -Name $name -StartupType Disabled -ErrorAction Stop
+                if ($svc.Status -ne 'Stopped') { Stop-Service -Name $name -Force -ErrorAction SilentlyContinue }
+            } catch {
+                Write-Log "[WARN] Could not suspend service $name -> $($_.Exception.Message)" 'warn'
+                $script:SuspendedSvcs.Remove($name)
+            }
+        }
+        $btnSvcSuspend.Content = 'RESTORE SERVICES'
+        $txtSvcStatus.Text = "$($script:SuspendedSvcs.Count) service(s) suspended. They restore on this button or when Rom-Opti closes."
+        Write-Log "[OK]   $($script:SuspendedSvcs.Count) background service(s) suspended for this session." 'ok'
+    }
+}
+
+function Invoke-KillApps {
+    $targets = @()
+    if ($window.FindName('chkKillBrowsers').IsChecked) { $targets += $KillGroups.Browsers }
+    if ($window.FindName('chkKillOneDrive').IsChecked) { $targets += $KillGroups.OneDrive }
+    if ($window.FindName('chkKillEpic').IsChecked)     { $targets += $KillGroups.Epic }
+    if ($window.FindName('chkKillSpotify').IsChecked)  { $targets += $KillGroups.Spotify }
+    if ($window.FindName('chkKillRGB').IsChecked)      { $targets += $KillGroups.RGB }
+    if ($window.FindName('chkKillDiscord').IsChecked)  { $targets += $KillGroups.Discord }
+    if (-not $targets) { Write-Log 'No app groups selected to close.' 'warn'; return }
+
+    $killed = 0; $freedRam = 0.0
+    foreach ($name in $targets) {
+        foreach ($p in (Get-Process -Name $name -ErrorAction SilentlyContinue)) {
+            try {
+                $freedRam += $p.WorkingSet64
+                Stop-Process -Id $p.Id -Force -ErrorAction Stop
+                $killed++
+            } catch { Write-Log "[WARN] Could not close $($p.ProcessName) (PID $($p.Id)) -> $($_.Exception.Message)" 'warn' }
+        }
+    }
+    if ($killed -gt 0) { Write-Log "[OK]   Closed $killed background process(es), releasing about $(Format-Bytes $freedRam) of RAM." 'ok' }
+    else { Write-Log 'None of the selected apps were running.' 'info' }
+}
+
+function Get-RustCfgPath {
+    $exe = Find-RustClient
+    if (-not $exe) { return $null }
+    Join-Path (Split-Path $exe) 'cfg\client.cfg'
+}
+
+function Set-RustCfgPreset {
+    param([string]$Key, [string]$Label)
+    if (Get-Process -Name RustClient -ErrorAction SilentlyContinue) {
+        $txtCfgStatus.Text = 'Rust is running - close it first, then apply the preset.'
+        Write-Log '[FAIL] Rust config preset: RustClient is running.' 'err'
+        return
+    }
+    $cfg = Get-RustCfgPath
+    if (-not $cfg) {
+        $txtCfgStatus.Text = 'Rust install not found in your Steam libraries.'
+        Write-Log '[FAIL] Rust config preset: install not found via Steam.' 'err'
+        return
+    }
+    if (-not (Test-Path -LiteralPath $cfg)) {
+        $txtCfgStatus.Text = 'client.cfg not found - launch Rust once first so the game creates it.'
+        Write-Log '[FAIL] Rust config preset: client.cfg does not exist yet.' 'err'
+        return
+    }
+    try {
+        $bak = "$cfg.romopti.bak"
+        if (-not (Test-Path -LiteralPath $bak)) { Copy-Item -LiteralPath $cfg -Destination $bak -Force }
+        $set = $RustPresets[$Key]
+        $lines = @(Get-Content -LiteralPath $cfg)
+        $kept = foreach ($ln in $lines) {
+            $managed = $false
+            foreach ($k in $set.Keys) { if ($ln -match ('^\s*' + [regex]::Escape($k) + '\s')) { $managed = $true; break } }
+            if (-not $managed) { $ln }
+        }
+        $newLines = @($kept) + @($set.GetEnumerator() | ForEach-Object { '{0} "{1}"' -f $_.Key, $_.Value })
+        Set-Content -LiteralPath $cfg -Value $newLines -Encoding UTF8
+        $txtCfgStatus.Text = "$Label preset written ($($set.Count) convars). Applies on next Rust launch. Backup: client.cfg.romopti.bak"
+        Write-Log "[OK]   Rust $Label preset written to client.cfg ($($set.Count) convars)." 'ok'
+    } catch {
+        $txtCfgStatus.Text = "Failed: $($_.Exception.Message)"
+        Write-Log "[FAIL] Rust config preset -> $($_.Exception.Message)" 'err'
+    }
+}
+
+function Restore-RustCfg {
+    $cfg = Get-RustCfgPath
+    if (-not $cfg) { $txtCfgStatus.Text = 'Rust install not found in your Steam libraries.'; return }
+    $bak = "$cfg.romopti.bak"
+    if (-not (Test-Path -LiteralPath $bak)) { $txtCfgStatus.Text = 'No backup found - nothing has been changed yet.'; return }
+    if (Get-Process -Name RustClient -ErrorAction SilentlyContinue) { $txtCfgStatus.Text = 'Close Rust first, then restore.'; return }
+    try {
+        Copy-Item -LiteralPath $bak -Destination $cfg -Force
+        $txtCfgStatus.Text = 'Original client.cfg restored from backup.'
+        Write-Log '[OK]   Rust client.cfg restored from backup.' 'ok'
+    } catch {
+        $txtCfgStatus.Text = "Restore failed: $($_.Exception.Message)"
+        Write-Log "[FAIL] Rust cfg restore -> $($_.Exception.Message)" 'err'
+    }
+}
+
+# Session timers
+$script:AutoPurgeTimer = New-Object Windows.Threading.DispatcherTimer
+$script:AutoPurgeTimer.Interval = [TimeSpan]::FromMinutes(5)
+$script:AutoPurgeTimer.Add_Tick({ Invoke-PurgeStandby })
+
+$script:RustWatchTimer = New-Object Windows.Threading.DispatcherTimer
+$script:RustWatchTimer.Interval = [TimeSpan]::FromSeconds(10)
+$script:RustWatchTimer.Add_Tick({
+    $p = Get-Process -Name RustClient -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($p) {
+        if ($p.PriorityClass -ne 'High') {
+            try { $p.PriorityClass = 'High'; Write-Log '[OK]   Rust detected - process priority raised to High.' 'ok' }
+            catch { Write-Log "[FAIL] Could not raise Rust priority -> $($_.Exception.Message)" 'err' }
+        }
+        $txtRustBoost.Text = 'Rust running - priority High.'
+    } else {
+        $txtRustBoost.Text = 'Waiting for Rust to start...'
+    }
+})
+
 # ---- 10. EVENT WIRING ------------------------------------------------------
 $navRadios = @{
     Dashboard   = $window.FindName('navDashboard')
@@ -2109,6 +2565,7 @@ $navRadios = @{
     Rust        = $window.FindName('navRust')
     Debloat     = $window.FindName('navDebloat')
     Cleaner     = $window.FindName('navCleaner')
+    Gaming      = $window.FindName('navGaming')
     Hardware    = $window.FindName('navHardware')
 }
 
@@ -2141,10 +2598,24 @@ $window.FindName('btnCleanNone').Add_Click({
     foreach ($cb in $script:CleanChecks.Values) { $cb.IsChecked = $false }
 })
 
+$btnTimerToggle.Add_Click({ Invoke-TimerToggle })
+$btnPurgeNow.Add_Click({ Invoke-PurgeStandby })
+$chkAutoPurge.Add_Checked({   $script:AutoPurgeTimer.Start(); Write-Log 'Auto-purge enabled: standby memory cleared every 5 minutes.' 'accent' })
+$chkAutoPurge.Add_Unchecked({ $script:AutoPurgeTimer.Stop();  Write-Log 'Auto-purge disabled.' 'info' })
+$btnSvcSuspend.Add_Click({ Invoke-SvcSuspendToggle })
+$btnKillApps.Add_Click({ Invoke-KillApps })
+$chkRustBoost.Add_Checked({   $script:RustWatchTimer.Start(); $txtRustBoost.Text = 'Waiting for Rust to start...' })
+$chkRustBoost.Add_Unchecked({ $script:RustWatchTimer.Stop();  $txtRustBoost.Text = '' })
+$window.FindName('btnCfgMax').Add_Click({  Set-RustCfgPreset -Key 'max'  -Label 'Max FPS' })
+$window.FindName('btnCfgComp').Add_Click({ Set-RustCfgPreset -Key 'comp' -Label 'Competitive' })
+$window.FindName('btnCfgBal').Add_Click({  Set-RustCfgPreset -Key 'bal'  -Label 'Balanced' })
+$window.FindName('btnCfgRestore').Add_Click({ Restore-RustCfg })
+
 # ---- 11. START -------------------------------------------------------------
 $window.Add_Loaded({
     Build-Sky $SkyCanvas
     Build-CleanList
+    Update-TimerStatus
     # Seed any Default tweaks (e.g. Create Restore Point) into the persistent selection set so
     # they start ticked, just like before, but now in a way that survives tab switches.
     foreach ($t in $Tweaks) {
@@ -2165,6 +2636,22 @@ $window.Add_Loaded({
 
 $window.Add_SizeChanged({
     if ($SkyCanvas.ActualWidth -gt 50) { Build-Sky $SkyCanvas }
+})
+
+# Safety net: never leave the system in session-mode state after the app closes.
+$window.Add_Closed({
+    try { $script:AutoPurgeTimer.Stop(); $script:RustWatchTimer.Stop() } catch { }
+    if ($script:SuspendedSvcs) {
+        foreach ($name in $script:SuspendedSvcs.Keys) {
+            $info = $script:SuspendedSvcs[$name]
+            try {
+                if ($info.Startup -in @('Automatic','Manual','Disabled')) { Set-Service -Name $name -StartupType $info.Startup -ErrorAction Stop }
+                if ($info.Running) { Start-Service -Name $name -ErrorAction SilentlyContinue }
+            } catch { }
+        }
+        $script:SuspendedSvcs = $null
+    }
+    if ($script:NativeOk -and $script:TimerHeld) { [void][RomNative]::ReleaseTimerResolution() }
 })
 
 [void]($window.ShowDialog())
