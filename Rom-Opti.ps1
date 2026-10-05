@@ -2084,6 +2084,8 @@ $script:Xaml = @'
                 <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE80F;"/><TextBlock Text="Dashboard"/></StackPanel></RadioButton>
               <RadioButton x:Name="navOpt" Style="{StaticResource Nav}" GroupName="N">
                 <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE945;"/><TextBlock Text="Optimize"/></StackPanel></RadioButton>
+              <RadioButton x:Name="navNet" Style="{StaticResource Nav}" GroupName="N">
+                <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE774;"/><TextBlock Text="Internet"/></StackPanel></RadioButton>
               <RadioButton x:Name="navDebloat" Style="{StaticResource Nav}" GroupName="N">
                 <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE74D;"/><TextBlock Text="Debloat"/></StackPanel></RadioButton>
               <RadioButton x:Name="navStartup" Style="{StaticResource Nav}" GroupName="N">
@@ -2187,6 +2189,7 @@ $script:Xaml = @'
               <Border Grid.Row="2" Style="{StaticResource Card}" Padding="16,12" Margin="0,6,0,0">
                 <DockPanel LastChildFill="False">
                   <CheckBox x:Name="chkRestore" Style="{StaticResource Switch}" Content="Create a restore point first" IsChecked="True" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="{StaticResource Muted}" FontSize="12.5"/>
+                  <Button x:Name="btnOptAll" DockPanel.Dock="Right" Style="{StaticResource BtnPrimary}" Content="⚡ Optimize all safe" Margin="8,0,0,0"/>
                   <Button x:Name="btnOptApply" DockPanel.Dock="Right" Style="{StaticResource BtnPrimary}" Content="Apply selected" Margin="8,0,0,0"/>
                   <Button x:Name="btnOptRevert" DockPanel.Dock="Right" Style="{StaticResource BtnDanger}" Content="Revert selected" Margin="8,0,0,0"/>
                   <Button x:Name="btnOptClear" DockPanel.Dock="Right" Style="{StaticResource Btn}" Content="Clear" Margin="8,0,0,0"/>
@@ -2194,6 +2197,59 @@ $script:Xaml = @'
                 </DockPanel>
               </Border>
             </Grid>
+
+            <!-- Internet optimizer -->
+            <ScrollViewer x:Name="pgNet" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+              <StackPanel Margin="0,0,10,12">
+                <Border Style="{StaticResource Card}" Margin="0,0,0,12">
+                  <StackPanel>
+                    <TextBlock Text="TCP Optimizer-style safe profile" FontSize="14" FontWeight="Bold" Foreground="{StaticResource Text}"/>
+                    <TextBlock Margin="0,4,0,12" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Text="One click captures your current network state, applies Windows-supported TCP settings with a stability-first policy, verifies connectivity, and keeps a rollback backup. It does not use random latency registry hacks."/>
+                    <WrapPanel>
+                      <RadioButton x:Name="netProfGaming" GroupName="NetProfile" Content="Gaming / Balanced" IsChecked="True" Margin="0,5,20,5"/>
+                      <RadioButton x:Name="netProfDefault" GroupName="NetProfile" Content="Windows Default" Margin="0,5,20,5"/>
+                      <RadioButton x:Name="netProfThroughput" GroupName="NetProfile" Content="High Throughput" Margin="0,5,20,5"/>
+                    </WrapPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                      <Button x:Name="btnNetOptimize" Style="{StaticResource BtnPrimary}" Content="APPLY OPTIMAL" Padding="22,11"/>
+                      <Button x:Name="btnNetRestore" Style="{StaticResource BtnDanger}" Content="Restore last backup" Margin="8,0,0,0"/>
+                      <Button x:Name="btnNetRefresh" Style="{StaticResource Btn}" Content="Refresh diagnostics" Margin="8,0,0,0"/>
+                    </StackPanel>
+                    <TextBlock x:Name="netStatus" Margin="0,12,0,0" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                  </StackPanel>
+                </Border>
+                <Grid>
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                  <Border Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,0,12">
+                    <StackPanel>
+                      <TextBlock Text="CONNECTION" FontSize="10.5" FontWeight="Bold" Foreground="{StaticResource Dim}"/>
+                      <TextBlock x:Name="netAdapter" Margin="0,10,0,0" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource Text}" TextWrapping="Wrap"/>
+                      <TextBlock x:Name="netLink" Margin="0,6,0,0" FontSize="12" Foreground="{StaticResource Muted}"/>
+                      <TextBlock x:Name="netMtu" Margin="0,6,0,0" FontSize="12" Foreground="{StaticResource Muted}"/>
+                      <TextBlock x:Name="netGateway" Margin="0,6,0,0" FontSize="12" Foreground="{StaticResource Muted}"/>
+                      <TextBlock x:Name="netDns" Margin="0,6,0,0" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                    </StackPanel>
+                  </Border>
+                  <Border Grid.Column="2" Style="{StaticResource Card}" Margin="0,0,0,12">
+                    <StackPanel>
+                      <TextBlock Text="HEALTH" FontSize="10.5" FontWeight="Bold" Foreground="{StaticResource Dim}"/>
+                      <TextBlock Margin="0,10,0,0" Text="Gateway / internet ping" FontSize="11.5" Foreground="{StaticResource Dim}"/>
+                      <TextBlock x:Name="netPing" Margin="0,3,0,0" FontSize="24" FontWeight="Bold" Foreground="{StaticResource Text}"/>
+                      <TextBlock Margin="0,10,0,0" Text="Packet loss" FontSize="11.5" Foreground="{StaticResource Dim}"/>
+                      <TextBlock x:Name="netLoss" Margin="0,3,0,0" FontSize="20" FontWeight="Bold" Foreground="{StaticResource Text}"/>
+                      <TextBlock Margin="0,10,0,0" Text="TCP autotuning" FontSize="11.5" Foreground="{StaticResource Dim}"/>
+                      <TextBlock x:Name="netTcp" Margin="0,3,0,0" FontSize="13" Foreground="{StaticResource AccentHi}"/>
+                    </StackPanel>
+                  </Border>
+                </Grid>
+                <Border Style="{StaticResource Card}">
+                  <StackPanel>
+                    <TextBlock Text="What this changes" FontSize="14" FontWeight="Bold" Foreground="{StaticResource Text}"/>
+                    <TextBlock Margin="0,8,0,0" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap" LineHeight="20" Text="• Captures the current TCP configuration before changes.&#10;• Keeps receive-window autotuning and RSS in supported Windows modes.&#10;• Avoids forcing arbitrary MTU, TCPNoDelay, AckFrequency or other folklore tweaks.&#10;• Disables NIC power-saving features when the adapter exposes them, reducing link-state power transitions.&#10;• Flushes stale DNS cache only; DNS cache flushing does not increase FPS.&#10;• Lets you restore the last captured state at any time."/>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </ScrollViewer>
 
             <!-- Rust -->
             <ScrollViewer x:Name="pgRust" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
@@ -2847,10 +2903,173 @@ function Set-Busy {
     Set-Spinner $Busy
 }
 
+# ---- internet optimizer ---------------------------------------------------------
+$script:NetBackupDir = Join-Path $script:DataDir 'NetworkBackups'
+if (-not (Test-Path $script:NetBackupDir)) { New-Item -ItemType Directory -Path $script:NetBackupDir -Force | Out-Null }
+
+function Get-ActiveNetworkAdapter {
+    try {
+        $a = Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' } |
+            Sort-Object @{Expression={ if ($_.MediaType -match '802\.3') { 0 } else { 1 } }}, ifIndex | Select-Object -First 1
+        return $a
+    } catch { return $null }
+}
+
+function Get-NetworkState {
+    $a = Get-ActiveNetworkAdapter
+    $global = try { (netsh interface tcp show global) -join "`n" } catch { '' }
+    $heur = try { (netsh interface tcp show heuristics) -join "`n" } catch { '' }
+    $supp = try { (netsh interface tcp show supplemental) -join "`n" } catch { '' }
+    $ip = @()
+    try { $ip = @(Get-NetIPConfiguration -ErrorAction Stop | Where-Object { $_.NetAdapter.Status -eq 'Up' }) } catch { }
+    $dns = @()
+    try { $dns = @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.ServerAddresses.Count -gt 0 }) } catch { }
+    $mtu = $null
+    if ($a) { try { $mtu = (Get-NetIPInterface -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction Stop).NlMtu } catch { } }
+    [pscustomobject]@{
+        AdapterName = if ($a) { $a.Name } else { '' }
+        AdapterGuid = if ($a) { $a.InterfaceGuid.Guid } else { '' }
+        LinkSpeed = if ($a) { [string]$a.LinkSpeed } else { '' }
+        MediaType = if ($a) { [string]$a.MediaType } else { '' }
+        InterfaceIndex = if ($a) { [int]$a.ifIndex } else { 0 }
+        Mtu = if ($mtu) { [int]$mtu } else { 0 }
+        Gateway = if ($ip -and $ip[0].IPv4DefaultGateway) { [string]$ip[0].IPv4DefaultGateway.NextHop } else { '' }
+        IPv4 = if ($ip -and $ip[0].IPv4Address) { [string]$ip[0].IPv4Address[0].IPAddress } else { '' }
+        Dns = @($dns | ForEach-Object { $_.ServerAddresses } | ForEach-Object { $_ })
+        AdapterPower = if ($a) { try { Get-NetAdapterPowerManagement -Name $a.Name -ErrorAction Stop | Select-Object AllowComputerToTurnOffDevice,SelectiveSuspend,DeviceSleepOnDisconnect } catch { $null } } else { $null }
+        AdapterAdvanced = if ($a) { try { @(Get-NetAdapterAdvancedProperty -Name $a.Name -ErrorAction Stop | Where-Object { $_.DisplayName -in @('Energy Efficient Ethernet','Green Ethernet','Power Saving Mode') } | Select-Object DisplayName,DisplayValue) } catch { @() } } else { @() }
+        TcpGlobal = $global
+        TcpHeuristics = $heur
+        TcpSupplemental = $supp
+        CapturedAt = (Get-Date).ToString('o')
+    }
+}
+
+function Save-NetworkBackup {
+    $state = Get-NetworkState
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $path = Join-Path $script:NetBackupDir "network-$stamp.json"
+    $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $path -Encoding UTF8
+    $latest = Join-Path $script:NetBackupDir 'latest.json'
+    $state | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $latest -Encoding UTF8
+    return $path
+}
+
+function Get-LatestNetworkBackup {
+    $p = Join-Path $script:NetBackupDir 'latest.json'
+    if (-not (Test-Path $p)) { return $null }
+    try { return (Get-Content -LiteralPath $p -Raw | ConvertFrom-Json) } catch { return $null }
+}
+
+function Restore-NetworkBackup {
+    $b = Get-LatestNetworkBackup
+    if (-not $b) { throw 'No network backup exists yet.' }
+    if ($b.TcpGlobal) {
+        # Restore only supported stateful values that we can safely parse from the saved output.
+        # Unknown/custom values are left untouched rather than guessed.
+        if ($b.TcpGlobal -match 'Receive Window Auto-Tuning Level\s*:\s*(\S+)') { & netsh interface tcp set global autotuninglevel=$($Matches[1]) | Out-Null }
+        if ($b.TcpGlobal -match 'Receive-Side Scaling State\s*:\s*(\S+)') { & netsh interface tcp set global rss=$($Matches[1]) | Out-Null }
+        if ($b.TcpGlobal -match 'ECN Capability\s*:\s*(\S+)') { & netsh interface tcp set global ecncapability=$($Matches[1]) | Out-Null }
+        if ($b.TcpGlobal -match 'RFC 1323 Timestamps\s*:\s*(\S+)') { & netsh interface tcp set global timestamps=$($Matches[1]) | Out-Null }
+        if ($b.TcpGlobal -match 'Receive Segment Coalescing State\s*:\s*(\S+)') { & netsh interface tcp set global rsc=$($Matches[1]) | Out-Null }
+        if ($b.TcpGlobal -match 'Fast Open\s*:\s*(\S+)') { & netsh interface tcp set global fastopen=$($Matches[1]) | Out-Null }
+    }
+    if ($b.InterfaceIndex -gt 0 -and $b.Mtu -gt 0) {
+        try { netsh interface ipv4 set subinterface "$($b.InterfaceIndex)" mtu=$($b.Mtu) store=persistent | Out-Null } catch { }
+    }
+    if ($b.AdapterName) {
+        try {
+            if ($b.AdapterPower -and $null -ne $b.AdapterPower.AllowComputerToTurnOffDevice) {
+                Set-NetAdapterPowerManagement -Name $b.AdapterName -AllowComputerToTurnOffDevice $b.AdapterPower.AllowComputerToTurnOffDevice -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        foreach ($row in @($b.AdapterAdvanced)) {
+            if ($row.DisplayName -and $row.DisplayValue) {
+                try { Set-NetAdapterAdvancedProperty -Name $b.AdapterName -DisplayName $row.DisplayName -DisplayValue $row.DisplayValue -NoRestart -ErrorAction SilentlyContinue } catch { }
+            }
+        }
+    }
+    Write-Log 'Previous network state restored where Windows exposed a reversible setting.' 'ok'
+}
+
+function Get-NetworkProfile {
+    param([ValidateSet('Default','Gaming','Throughput')][string]$Profile = 'Gaming')
+    switch ($Profile) {
+        'Default' { return @{ autotuninglevel='normal'; rss='enabled'; ecncapability='default'; timestamps='default'; rsc='default'; fastopen='default' } }
+        'Throughput' { return @{ autotuninglevel='normal'; rss='enabled'; ecncapability='default'; timestamps='default'; rsc='default'; fastopen='default' } }
+        default { return @{ autotuninglevel='normal'; rss='enabled'; ecncapability='default'; timestamps='default'; rsc='default'; fastopen='default' } }
+    }
+}
+
+function Invoke-NetworkOptimize {
+    param([ValidateSet('Gaming','Default','Throughput')][string]$Profile='Gaming')
+    $backup = Save-NetworkBackup
+    Write-Log "Network backup saved: $backup" 'info'
+    $cfg = Get-NetworkProfile $Profile
+    $commands = @(
+        "netsh interface tcp set global autotuninglevel=$($cfg.autotuninglevel)",
+        "netsh interface tcp set global rss=$($cfg.rss)",
+        "netsh interface tcp set global ecncapability=$($cfg.ecncapability)",
+        "netsh interface tcp set global timestamps=$($cfg.timestamps)",
+        "netsh interface tcp set global rsc=$($cfg.rsc)",
+    )
+    foreach ($cmd in $commands) {
+        try { Invoke-Expression $cmd | Out-Null } catch { Write-Log "Network command failed: $cmd :: $($_.Exception.Message)" 'warn' }
+    }
+    $a = Get-ActiveNetworkAdapter
+    if ($a) {
+        try {
+            Set-NetAdapterPowerManagement -Name $a.Name -AllowComputerToTurnOffDevice Disabled -ErrorAction Stop
+        } catch { }
+        try {
+            Disable-NetAdapterPowerManagement -Name $a.Name -ErrorAction Stop
+        } catch { }
+        try {
+            $p = Get-NetAdapterAdvancedProperty -Name $a.Name -ErrorAction SilentlyContinue
+            foreach ($name in @('Energy Efficient Ethernet','Green Ethernet','Power Saving Mode')) {
+                $row = $p | Where-Object { $_.DisplayName -eq $name } | Select-Object -First 1
+                if ($row) { try { Set-NetAdapterAdvancedProperty -Name $a.Name -DisplayName $row.DisplayName -DisplayValue 'Disabled' -NoRestart -ErrorAction Stop } catch { } }
+            }
+        } catch { }
+    }
+    try { & ipconfig.exe /flushdns | Out-Null } catch { }
+    Write-Log "Internet optimizer applied: $Profile profile. Windows defaults were preserved for settings without a strong stability case." 'ok'
+    return $backup
+}
+
+function Test-NetworkHealth {
+    $a = Get-ActiveNetworkAdapter
+    $gateway = $null
+    try { $gateway = (Get-NetIPConfiguration -ErrorAction Stop | Where-Object { $_.NetAdapter.Status -eq 'Up' -and $_.IPv4DefaultGateway } | Select-Object -First 1).IPv4DefaultGateway.NextHop } catch { }
+    $target = if ($gateway) { $gateway } else { '1.1.1.1' }
+    $r = $null
+    try { $r = Test-Connection -ComputerName $target -Count 4 -ErrorAction Stop } catch { }
+    $avg = if ($r) { [math]::Round((@($r | Measure-Object ResponseTime -Average).Average),1) } else { $null }
+    $loss = if ($r) { [math]::Round(100 * (4 - @($r).Count) / 4,1) } else { 100 }
+    [pscustomobject]@{ Adapter = if ($a) { $a.Name } else { 'None' }; Target = $target; AvgMs = $avg; PacketLoss = $loss }
+}
+
+function Update-NetworkUi {
+    $ui = $script:UI
+    if (-not $ui.netAdapter) { return }
+    $s = Get-NetworkState
+    $ui.netAdapter.Text = if ($s.AdapterName) { $s.AdapterName } else { 'No active adapter' }
+    $ui.netLink.Text = if ($s.LinkSpeed) { $s.LinkSpeed } else { '—' }
+    $ui.netMtu.Text = if ($s.Mtu) { [string]$s.Mtu } else { '—' }
+    $ui.netGateway.Text = if ($s.Gateway) { $s.Gateway } else { '—' }
+    $ui.netDns.Text = if (@($s.Dns).Count) { (@($s.Dns) -join ', ') } else { 'Automatic / unavailable' }
+    $ui.netTcp.Text = if ($s.TcpGlobal -match 'Receive Window Auto-Tuning Level\s*:\s*(\S+)') { $Matches[1] } else { 'Unknown' }
+    $h = Test-NetworkHealth
+    $ui.netPing.Text = if ($null -ne $h.AvgMs) { "$($h.AvgMs) ms" } else { 'Unavailable' }
+    $ui.netLoss.Text = "$($h.PacketLoss)%"
+    $ui.netStatus.Text = if ($h.PacketLoss -eq 0) { 'Healthy connection' } else { 'Connection needs attention' }
+}
+
 # ---- pages --------------------------------------------------------------------
 $script:PageMeta = [ordered]@{
     dash    = @{ Title = 'Dashboard';     Sub = 'Your PC at a glance, and what is really holding back your FPS.' }
     opt     = @{ Title = 'Optimize';      Sub = 'Toggle what you want, then apply. Everything is journaled and reversible.' }
+    net     = @{ Title = 'Internet optimizer'; Sub = 'TCP Optimizer-style profiles with backups, diagnostics and one-click safe tuning.' }
     rust    = @{ Title = 'Rust';          Sub = 'Launch options and graphics config tuned for RustClient.' }
     session = @{ Title = 'Game session';  Sub = 'Boosts that run only while you play, then undo themselves.' }
     debloat = @{ Title = 'Debloat';       Sub = 'Remove preinstalled apps and promos for every user on this PC.' }
@@ -2858,7 +3077,7 @@ $script:PageMeta = [ordered]@{
     clean   = @{ Title = 'Cleaner';       Sub = 'Free disk space. Nothing is deleted until you confirm.' }
     log     = @{ Title = 'Activity log';  Sub = 'Everything this app has done on this PC.' }
 }
-$script:PageCtl = @{ dash = 'pgDash'; opt = 'pgOpt'; debloat = 'pgDebloat'; startup = 'pgStartup'; rust = 'pgRust'; session = 'pgSession'; clean = 'pgClean'; log = 'pgLog' }
+$script:PageCtl = @{ dash = 'pgDash'; opt = 'pgOpt'; net = 'pgNet'; debloat = 'pgDebloat'; startup = 'pgStartup'; rust = 'pgRust'; session = 'pgSession'; clean = 'pgClean'; log = 'pgLog' }
 
 function Start-PageIn {
     param([string]$Key)
@@ -2875,6 +3094,7 @@ function Start-PageIn {
             Update-DashStats -Animate
         }
         'opt'     { Start-Stagger $ui.pnlTweaks 14 28 40 10 }
+        'net'     { Start-Stagger $ui.pgNet.Content 2 90 40 14 }
         'debloat' { Start-Stagger $ui.pnlDebloat 14 28 40 10 }
         'startup' { Start-Stagger $ui.pnlStartup 12 30 40 10 }
         'clean'   { Start-Stagger $ui.pnlClean 10 34 40 10 }
@@ -2893,6 +3113,7 @@ function Show-Page {
     switch ($Key) {
         'dash'    { Update-Dashboard -KeepFindings }
         'opt'     { Update-AllCards }
+        'net'     { Update-NetworkUi }
         'debloat' { if (-not $script:DbBuilt) { Build-DebloatPage; Start-DebloatScan } }
         'startup' { Build-StartupPage }
         'rust'    { Update-Launch }
@@ -3521,7 +3742,7 @@ function Register-Events {
     $ui.btnEnter.Add_Click({ Invoke-Safe { Enter-App } 'Enter' })
 
     # navigation
-    $navs = @{ navDash = 'dash'; navOpt = 'opt'; navDebloat = 'debloat'; navStartup = 'startup'; navRust = 'rust'; navSession = 'session'; navClean = 'clean'; navLog = 'log' }
+    $navs = @{ navDash = 'dash'; navOpt = 'opt'; navNet = 'net'; navDebloat = 'debloat'; navStartup = 'startup'; navRust = 'rust'; navSession = 'session'; navClean = 'clean'; navLog = 'log' }
     foreach ($n in $navs.Keys) {
         $ui[$n].Tag = $navs[$n]
         $ui[$n].Add_Checked({ param($s, $e) Invoke-Safe { Show-Page ([string]$s.Tag) } 'Navigation' })
@@ -3532,10 +3753,45 @@ function Register-Events {
     $ui.btnGoOpt.Add_Click({ Invoke-Safe { $script:UI.navOpt.IsChecked = $true; Select-Recommended } 'Review' })
 
     # optimize
+    $ui.btnOptAll.Add_Click({
+        Invoke-Safe {
+            $ans = [Windows.MessageBox]::Show('Apply every tweak marked Recommended for this PC? Advanced/security-sensitive tweaks are not included.', 'Daqueece Optimizer', 'YesNo', 'Question')
+            if ($ans -ne 'Yes') { return }
+            Select-Recommended
+            Invoke-OptRun $true
+        } 'Optimize all safe'
+    })
     $ui.btnOptApply.Add_Click({ Invoke-Safe { Invoke-OptRun $true } 'Apply' })
     $ui.btnOptRevert.Add_Click({ Invoke-Safe { Invoke-OptRun $false } 'Revert' })
     $ui.btnOptRec.Add_Click({ Invoke-Safe { Select-Recommended } 'Select' })
     $ui.btnOptClear.Add_Click({ foreach ($c in $script:Cards.Values) { $c.Switch.IsChecked = $false } })
+
+    # internet optimizer
+    $ui.btnNetRefresh.Add_Click({ Invoke-Safe { Update-NetworkUi } 'Network refresh' })
+    $ui.btnNetOptimize.Add_Click({
+        Invoke-Safe {
+            $profile = if ($ui.netProfDefault.IsChecked) { 'Default' } elseif ($ui.netProfThroughput.IsChecked) { 'Throughput' } else { 'Gaming' }
+            $backup = Invoke-NetworkOptimize $profile
+            Start-Sleep -Milliseconds 350
+            $h = Test-NetworkHealth
+            if ($h.PacketLoss -gt 0) {
+                Write-Log 'Network verification detected packet loss after optimization. Review the connection and use Restore last backup if needed.' 'warn'
+                $ui.netStatus.Foreground = Get-Res 'Warn'
+            } else {
+                $ui.netStatus.Foreground = Get-Res 'Good'
+            }
+            $ui.netStatus.Text = "Applied $profile profile. Backup: $([IO.Path]::GetFileName($backup)). Ping: $($h.AvgMs) ms; loss: $($h.PacketLoss)%"
+            Update-NetworkUi
+        } 'Network optimize'
+    })
+    $ui.btnNetRestore.Add_Click({
+        Invoke-Safe {
+            $ans = [Windows.MessageBox]::Show('Restore the last captured network configuration?', 'Daqueece Optimizer', 'YesNo', 'Warning')
+            if ($ans -ne 'Yes') { return }
+            Restore-NetworkBackup
+            Update-NetworkUi
+        } 'Network restore'
+    })
 
     # rust
     foreach ($n in 'loHigh', 'loExcl', 'loCpu', 'loD3d', 'loLog') { $ui[$n].Add_Click({ Update-Launch }) }
