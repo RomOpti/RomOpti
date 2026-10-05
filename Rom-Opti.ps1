@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-  ROM-OPTI v4  -  Windows tuning for Rust and other CPU-bound games
+  DAQUEECE OPTIMIZER v7  -  Windows tuning for Rust and other CPU-bound games
 
   Start it with Run-RomOpti.bat (or right-click this file > Run with PowerShell).
   It asks for administrator rights once.
@@ -18,16 +18,19 @@
 # ---- elevation --------------------------------------------------------------
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    try {
-        Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $PSCommandPath)
-    } catch { }
-    exit
+    if ($PSCommandPath) {
+        try { Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $PSCommandPath) } catch { }
+        exit
+    }
+    # Pasted into a normal (non-admin) PowerShell window: it cannot relaunch itself from memory.
+    Write-Host 'Daqueece Optimizer needs administrator rights. Open PowerShell as Administrator and run it again.' -ForegroundColor Yellow
+    return
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
-$script:Version = '4.0'
+$script:Version = '7.0'
 
 # ---- native helpers ---------------------------------------------------------
 $NativeSrc = @'
@@ -115,7 +118,7 @@ public static class RomNative {
     public static void HideConsole() { IntPtr h = GetConsoleWindow(); if (h != IntPtr.Zero) ShowWindow(h, 0); }
 }
 '@
-try { Add-Type -TypeDefinition $NativeSrc -ErrorAction Stop; $script:NativeOk = $true; [RomNative]::HideConsole() }
+try { Add-Type -TypeDefinition $NativeSrc -ErrorAction Stop; $script:NativeOk = $true; if ($PSCommandPath) { [RomNative]::HideConsole() } }
 catch { $script:NativeOk = $false }
 
 # ---- paths, logging ---------------------------------------------------------
@@ -127,6 +130,7 @@ if (-not (Test-Path -LiteralPath $script:AppDir)) { [void](New-Item -ItemType Di
 try { if ((Test-Path -LiteralPath $script:LogFile) -and ((Get-Item -LiteralPath $script:LogFile).Length -gt 2MB)) { Remove-Item -LiteralPath $script:LogFile -Force } } catch { }
 
 $script:UI     = $null
+$script:AnimOn = $true
 $script:Brushes = @{}
 
 function Get-Brush {
@@ -169,6 +173,7 @@ function Write-Log {
     $script:UI.logList.ScrollIntoView($tb)
     $script:UI.lastLog.Text = $Message
     $script:UI.lastLog.Foreground = Get-Brush $color
+    if (Get-Command Start-FadeSlide -ErrorAction SilentlyContinue) { Start-FadeSlide $tb 0 5 0 200; Start-FadeSlide $script:UI.lastLog 0 0 0 240 }
 }
 
 function Invoke-UiPump {
@@ -402,6 +407,13 @@ function Get-SystemFacts {
     $f.Laptop = $false
     try { $f.Laptop = [bool](Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue) } catch { }
     $f.RustExe = Find-RustClient
+    $f.RustHdd = $false
+    try {
+        if ($f.RustExe) {
+            $m = [string](Get-Partition -DriveLetter $f.RustExe.Substring(0, 1) -ErrorAction Stop | Get-Disk -ErrorAction Stop | Get-PhysicalDisk -ErrorAction Stop | Select-Object -First 1).MediaType
+            $f.RustHdd = ($m -eq 'HDD')
+        }
+    } catch { }
     return $f
 }
 
@@ -556,11 +568,15 @@ function Invoke-TweakApply {
 
 $script:Groups = @(
     @{ Key = 'Power';   Title = 'Power & CPU' }
+    @{ Key = 'Sched';   Title = 'CPU scheduling & memory' }
     @{ Key = 'Gpu';     Title = 'GPU & display' }
     @{ Key = 'Rust';    Title = 'Rust (RustClient.exe)' }
     @{ Key = 'Input';   Title = 'Input' }
     @{ Key = 'Network'; Title = 'Network' }
+    @{ Key = 'Svc';     Title = 'Services & scheduled tasks' }
     @{ Key = 'Bg';      Title = 'Background load' }
+    @{ Key = 'Priv';    Title = 'Privacy, AI & ads' }
+    @{ Key = 'Vis';     Title = 'Visual effects' }
     @{ Key = 'Stab';    Title = 'Stability' }
     @{ Key = 'Adv';     Title = 'Advanced (security tradeoff)' }
     @{ Key = 'Prefs';   Title = 'Windows preferences' }
@@ -895,7 +911,7 @@ function Get-TweakCatalog {
         When = { if ($script:Facts.Build -ge 22631) { $true } else { 'Needs Windows 11 23H2 or newer' } }
         Reg = @( (RegItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\TaskbarDeveloperSettings' 'TaskbarEndTask' 1) ) })
 
-    return $list.ToArray()
+    return (@($list.ToArray()) + @(Get-ExtraTweaks))
 }
 
 function Test-TweakRecommended {
@@ -903,6 +919,235 @@ function Test-TweakRecommended {
     if ($null -eq $T.Rec) { return $false }
     if ($T.Rec -is [scriptblock]) { return [bool](& $T.Rec) }
     return [bool]$T.Rec
+}
+# ---- extra tweaks (v7) ---------------------------------------------------------
+function Get-BcdValue {
+    param([string]$Name)
+    $r = Invoke-NativeOut { bcdedit /enum '{current}' }
+    if ($r.Out -match ('(?im)^\s*' + [regex]::Escape($Name) + '\s+(\S+)')) { return $Matches[1] }
+    return $null
+}
+
+function Get-IntelGen {
+    # 2..14 for Intel Core iX-NNNN / NNNNN, otherwise $null
+    $n = $script:Facts.CpuName
+    if ($n -match 'Core\(TM\)\s+i[3579]-(\d{4,5})') {
+        $d = $Matches[1]
+        if ($d.Length -eq 5) { return [int]$d.Substring(0, 2) } else { return [int]$d.Substring(0, 1) }
+    }
+    return $null
+}
+
+function Get-ExtraTweaks {
+    $list = New-Object System.Collections.ArrayList
+    $mm   = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
+    $memk = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
+    $gfx  = 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers'
+    $cdm  = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+
+    # ======================= CPU SCHEDULING & MEMORY =======================
+    [void]$list.Add(@{ Id = 'sch_prio'; Group = 'Sched'; Name = 'Foreground priority boost (short, fixed quanta)'; Impact = 1; Gain = @('Lows', 'Latency')
+        Desc = 'Sets Win32PrioritySeparation to 0x26. The window you are using gets a stronger CPU share over background work in short, fixed time slices. Windows default is 2. This is one of the few scheduler settings with a real, if small, effect on game frametime consistency.'
+        Rec = $true
+        Reg = @( (RegItem 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 38) ) })
+    [void]$list.Add(@{ Id = 'sch_mmcss'; Group = 'Sched'; Name = 'Multimedia scheduler: favor the foreground'; Impact = 1; Gain = @('Lows')
+        Desc = 'Reserves 0% CPU for background multimedia tasks (default 20%) and lifts the network throttle. It only affects programs that register with the multimedia scheduler (MMCSS), which many games do not, so expect a small effect.'
+        Rec = $true
+        Reg = @( (RegItem $mm 'SystemResponsiveness' 0), (RegItem $mm 'NetworkThrottlingIndex' 4294967295) ) })
+    [void]$list.Add(@{ Id = 'sch_games'; Group = 'Sched'; Name = 'Games task: highest scheduling class'; Impact = 1; Gain = @('Lows')
+        Desc = 'Raises the "Games" MMCSS profile to GPU priority 8, CPU priority 6, High scheduling and High storage priority. Applies to titles that use MMCSS. Harmless for ones that do not.'
+        Rec = $true
+        Reg = @( (RegItem "$mm\Tasks\Games" 'GPU Priority' 8), (RegItem "$mm\Tasks\Games" 'Priority' 6),
+                 (RegItem "$mm\Tasks\Games" 'Scheduling Category' 'High' 'String'), (RegItem "$mm\Tasks\Games" 'SFIO Priority' 'High' 'String') ) })
+    [void]$list.Add(@{ Id = 'sch_hags'; Group = 'Sched'; Name = 'Hardware-accelerated GPU scheduling on'; Impact = 1; Gain = @('Latency', 'FPS'); Reboot = $true
+        Desc = 'Lets the GPU manage its own memory queue instead of the CPU. Helps on newer cards, especially with frame generation (DLSS / FSR 3). On some GPUs and drivers it is neutral or slightly worse.'
+        Note = 'Test it: run the same Rust scene before and after. Revert if lows get worse.'
+        Rec = $false
+        When = { if ($script:Facts.Build -ge 19041) { $true } else { 'Needs Windows 10 2004 or newer' } }
+        Reg = @( (RegItem $gfx 'HwSchMode' 2) ) })
+    [void]$list.Add(@{ Id = 'sch_pagexec'; Group = 'Sched'; Name = 'Keep the kernel in RAM'; Impact = 1; Gain = @('Lows'); Reboot = $true
+        Desc = 'Stops Windows from paging out kernel and driver code. With plenty of RAM it avoids rare multi-millisecond stalls when a driver routine has to be paged back in.'
+        Rec = { $script:Facts.RamGB -ge 15 }
+        When = { if ($script:Facts.RamGB -ge 15) { $true } else { 'Needs 16 GB of RAM or more' } }
+        Reg = @( (RegItem $memk 'DisablePagingExecutive' 1) ) })
+    [void]$list.Add(@{ Id = 'sch_memcomp'; Group = 'Sched'; Name = 'Memory compression off'; Impact = 1; Gain = @('Lows'); Reboot = $true
+        Desc = 'Windows compresses idle memory pages in the background, which spends a little CPU. With 16 GB or more you rarely need it. With less RAM, leave it on.'
+        Rec = $false
+        When = { if (-not (Get-Command Get-MMAgent -ErrorAction SilentlyContinue)) { 'Not supported on this Windows' } elseif ($script:Facts.RamGB -lt 15) { 'Needs 16 GB of RAM or more' } else { $true } }
+        Check = { param($t) return (-not (Get-MMAgent).MemoryCompression) }
+        Apply = { param($t) Disable-MMAgent -MemoryCompression }
+        Undo  = { param($t) Enable-MMAgent -MemoryCompression } })
+    [void]$list.Add(@{ Id = 'sch_tick'; Group = 'Sched'; Name = 'Disable dynamic tick'; Impact = 1; Gain = @('Latency'); Reboot = $true
+        Desc = 'Makes the system timer tick at a constant rate instead of skipping ticks when idle. Some systems get steadier frame pacing. Idle power use goes up slightly.'
+        Note = 'Unproven on many setups. Only keep it if you measure a difference.'
+        Rec = $false
+        Check = { param($t) return ((Get-BcdValue 'disabledynamictick') -eq 'Yes') }
+        Apply = { param($t) Invoke-Native { bcdedit /set disabledynamictick yes } }
+        Undo  = { param($t) $null = Invoke-NativeOut { bcdedit /deletevalue disabledynamictick } } })
+    [void]$list.Add(@{ Id = 'sch_maint'; Group = 'Sched'; Name = 'Automatic maintenance off'; Impact = 1; Gain = @('Lows', 'Background')
+        Desc = 'Stops Windows from launching its idle-time maintenance (defrag, scans, diagnostics) mid-session. You can still run Windows Update and Defender scans by hand.'
+        Rec = $true
+        Reg = @( (RegItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance' 'MaintenanceDisabled' 1) ) })
+    [void]$list.Add(@{ Id = 'sch_fast'; Group = 'Sched'; Name = 'Fast Startup off'; Impact = 0; Gain = @('Stability')
+        Desc = 'Fast Startup saves a kernel snapshot at shutdown, so a "shutdown" is really a hibernate. Turning it off makes every shutdown a true clean boot, which clears stuck drivers and odd GPU states.'
+        Rec = $true
+        Reg = @( (RegItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled' 0) ) })
+    [void]$list.Add(@{ Id = 'sch_hibernate'; Group = 'Sched'; Name = 'Hibernation off (frees disk space)'; Impact = 0; Gain = @('Comfort')
+        Desc = 'Deletes hiberfil.sys, which is roughly 40% of your RAM size on disk (often 6-20 GB).'
+        Rec = $false
+        When = { if ($script:Facts.Laptop) { 'Laptops need hibernate for low-battery safety' } else { $true } }
+        Check = { param($t) return ((Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' 'HibernateEnabled' 1) -eq 0) }
+        Apply = { param($t) Invoke-Native { powercfg /hibernate off } }
+        Undo  = { param($t) Invoke-Native { powercfg /hibernate on } } })
+    [void]$list.Add(@{ Id = 'sch_defscan'; Group = 'Sched'; Name = 'Defender scans: low CPU priority'; Impact = 1; Gain = @('Background')
+        Desc = 'Keeps Microsoft Defender protection fully on but makes its scans run at idle priority and cap at 10% average CPU, so a scan cannot hurt a game.'
+        Rec = $true
+        When = {
+            if (-not (Get-Command Get-MpPreference -ErrorAction SilentlyContinue)) { return 'Defender cmdlets unavailable' }
+            try { if (-not (Get-MpComputerStatus).RealTimeProtectionEnabled) { return 'Defender real-time protection is off (another antivirus may be active)' } } catch { return 'Defender unavailable' }
+            return $true }
+        Check = { param($t) $p = Get-MpPreference; return ([int]$p.ScanAvgCPULoadFactor -le 10 -and [bool]$p.EnableLowCpuPriority) }
+        Apply = { param($t) $p = Get-MpPreference
+                  Set-Extra $t.Id 'Load' ([string][int]$p.ScanAvgCPULoadFactor); Set-Extra $t.Id 'Low' ([string][bool]$p.EnableLowCpuPriority)
+                  Set-MpPreference -ScanAvgCPULoadFactor 10 -EnableLowCpuPriority $true }
+        Undo  = { param($t) $l = Get-Extra $t.Id 'Load'; $w = Get-Extra $t.Id 'Low'
+                  if ($l) { Set-MpPreference -ScanAvgCPULoadFactor ([int]$l) }
+                  if ($w) { Set-MpPreference -EnableLowCpuPriority ($w -eq 'True') } } })
+    [void]$list.Add(@{ Id = 'sch_wudrv'; Group = 'Sched'; Name = 'Windows Update stops swapping your GPU driver'; Impact = 0; Gain = @('Stability')
+        Desc = 'Prevents Windows Update from silently replacing your NVIDIA / AMD driver with an older one, a classic cause of "it ran fine yesterday" FPS drops. You still update the driver yourself from the vendor.'
+        Rec = $true
+        Reg = @( (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' 'ExcludeWUDriversInQualityUpdate' 1) ) })
+    [void]$list.Add(@{ Id = 'sch_mitig'; Group = 'Adv'; Name = 'CPU vulnerability mitigations off (older Intel only)'; Impact = 3; Gain = @('FPS', 'Lows'); Reboot = $true
+        Desc = 'Turns off the Spectre / Meltdown software patches. On Intel 9th gen and older these cost real CPU performance; newer CPUs have the fix in hardware, so this tool blocks the tweak there.'
+        Note = 'Real security tradeoff: exposes you to side-channel attacks. Reboot required.'
+        Rec = $false
+        When = { $g = Get-IntelGen; if ($null -ne $g -and $g -le 9) { $true } else { 'Only offered for Intel Core 9th gen and older. Newer CPUs would gain under 1%.' } }
+        Reg = @( (RegItem $memk 'FeatureSettingsOverride' 3), (RegItem $memk 'FeatureSettingsOverrideMask' 3) ) })
+
+    # ======================= GPU & DISPLAY (more) =======================
+    [void]$list.Add(@{ Id = 'gpu_swap'; Group = 'Gpu'; Name = 'Optimizations for windowed / borderless games'; Impact = 2; Gain = @('FPS', 'Latency')
+        Desc = 'Lets DirectX 10/11 games running windowed or borderless use the faster flip presentation model, like exclusive fullscreen does. This is a large gain only if you do not play in exclusive fullscreen.'
+        Rec = $true
+        When = { if ($script:Facts.Win11) { $true } else { 'Windows 11 only' } }
+        Reg = { RegItem 'HKCU:\Software\Microsoft\DirectX\UserGpuPreferences' 'DirectXUserGlobalSettings' 'SwapEffectUpgradeEnable=1;' 'String' } })
+    [void]$list.Add(@{ Id = 'gpu_fsegl'; Group = 'Gpu'; Name = 'Fullscreen optimizations off (all games)'; Impact = 1; Gain = @('Latency')
+        Desc = 'Global version of the per-game setting: games that ask for exclusive fullscreen get it, instead of Windows substituting its own path. Lowers input latency on some setups, does nothing on others.'
+        Rec = $false
+        Reg = @( (RegItem 'HKCU:\System\GameConfigStore' 'GameDVR_FSEBehaviorMode' 2), (RegItem 'HKCU:\System\GameConfigStore' 'GameDVR_HonorUserFSEBehaviorMode' 1),
+                 (RegItem 'HKCU:\System\GameConfigStore' 'GameDVR_DXGIHonorFSEWindowsCompatible' 1), (RegItem 'HKCU:\System\GameConfigStore' 'GameDVR_EFSEFeatureFlags' 0) ) })
+    [void]$list.Add(@{ Id = 'gpu_mpo'; Group = 'Gpu'; Name = 'Multiplane overlay (MPO) off'; Impact = 1; Gain = @('Stability'); Reboot = $true
+        Desc = 'MPO is a known cause of stutter, flicker and black screens on some NVIDIA and AMD driver versions, mostly in borderless windowed mode. Turning it off only helps if you see those symptoms.'
+        Rec = $false
+        Reg = @( (RegItem 'HKLM:\SOFTWARE\Microsoft\Windows\Dwm' 'OverlayTestMode' 5) ) })
+
+    # ======================= INPUT (more) =======================
+    [void]$list.Add(@{ Id = 'inp_kbd'; Group = 'Input'; Name = 'Fastest keyboard repeat'; Impact = 0; Gain = @('Comfort')
+        Desc = 'Shortest repeat delay and fastest repeat rate for typing and menus. Applies after you sign out and back in.'
+        Rec = $false
+        Reg = @( (RegItem 'HKCU:\Control Panel\Keyboard' 'KeyboardDelay' '0' 'String'), (RegItem 'HKCU:\Control Panel\Keyboard' 'KeyboardSpeed' '31' 'String') ) })
+
+    # ======================= SERVICES & SCHEDULED TASKS =======================
+    [void]$list.Add(@{ Id = 'svc_sysmain'; Group = 'Svc'; Name = 'SysMain (Superfetch) off'; Impact = 1; Gain = @('Lows', 'Background')
+        Desc = 'SysMain pre-loads apps into RAM and can cause disk and memory spikes. It was designed for hard drives; on an SSD it adds little.'
+        Rec = { -not $script:Facts.RustHdd }
+        When = { if ($script:Facts.RustHdd) { 'Rust is on a hard disk, where SysMain actually helps' } else { $true } }
+        Svc = @( @{ N = 'SysMain'; S = 'Disabled'; Stop = $true; D = 'Automatic' } ) })
+    [void]$list.Add(@{ Id = 'svc_search'; Group = 'Svc'; Name = 'Windows Search indexing off'; Impact = 1; Gain = @('Background')
+        Desc = 'Stops the indexer from reading your disk in the background. Start-menu file search becomes slower, but app search still works.'
+        Rec = $false
+        Svc = @( @{ N = 'WSearch'; S = 'Disabled'; Stop = $true; D = 'Automatic' } ) })
+    [void]$list.Add(@{ Id = 'svc_misc'; Group = 'Svc'; Name = 'Unused background services off'; Impact = 1; Gain = @('Background')
+        Desc = 'Maps downloader, retail demo, fax, Insider service, Phone service, geolocation, Wallet, Windows Media sharing, Remote Registry and mixed-reality services. None of them are needed for gaming.'
+        Rec = $true
+        Svc = @( @{ N = 'MapsBroker'; S = 'Disabled'; Stop = $true; D = 'Automatic' }, @{ N = 'RetailDemo'; S = 'Disabled'; Stop = $true; D = 'Manual' },
+                 @{ N = 'Fax'; S = 'Disabled'; Stop = $true; D = 'Manual' }, @{ N = 'wisvc'; S = 'Disabled'; Stop = $true; D = 'Manual' },
+                 @{ N = 'PhoneSvc'; S = 'Disabled'; Stop = $true; D = 'Manual' }, @{ N = 'lfsvc'; S = 'Disabled'; Stop = $true; D = 'Manual' },
+                 @{ N = 'WalletService'; S = 'Disabled'; Stop = $true; D = 'Manual' }, @{ N = 'WMPNetworkSvc'; S = 'Disabled'; Stop = $true; D = 'Manual' },
+                 @{ N = 'RemoteRegistry'; S = 'Disabled'; Stop = $true; D = 'Disabled' }, @{ N = 'SharedRealitySvc'; S = 'Disabled'; Stop = $true; D = 'Manual' },
+                 @{ N = 'spectrum'; S = 'Disabled'; Stop = $true; D = 'Manual' }, @{ N = 'perceptionsimulation'; S = 'Disabled'; Stop = $true; D = 'Manual' } ) })
+    [void]$list.Add(@{ Id = 'svc_xbox'; Group = 'Svc'; Name = 'Xbox services off'; Impact = 1; Gain = @('Background')
+        Desc = 'Disables the Xbox auth, save-sync, accessory and networking services.'
+        Note = 'Breaks Xbox app sign-in, Game Pass games and Xbox cloud saves. Skip this if you use any of them.'
+        Rec = $false
+        Svc = @( @{ N = 'XblAuthManager'; S = 'Disabled'; Stop = $true; D = 'Manual' }, @{ N = 'XblGameSave'; S = 'Disabled'; Stop = $true; D = 'Manual' },
+                 @{ N = 'XboxNetApiSvc'; S = 'Disabled'; Stop = $true; D = 'Manual' }, @{ N = 'XboxGipSvc'; S = 'Disabled'; Stop = $true; D = 'Manual' } ) })
+    [void]$list.Add(@{ Id = 'svc_spooler'; Group = 'Svc'; Name = 'Print Spooler off'; Impact = 0; Gain = @('Background')
+        Desc = 'Stops the print service, which has a long history of security holes. Only offered when no physical printer is installed.'
+        Rec = $false
+        When = { try { $p = @(Get-Printer -ErrorAction Stop | Where-Object { $_.Name -notmatch 'PDF|XPS|OneNote|Fax' }); if ($p.Count -gt 0) { 'A physical printer is installed' } else { $true } } catch { $true } }
+        Svc = @( @{ N = 'Spooler'; S = 'Disabled'; Stop = $true; D = 'Automatic' } ) })
+    [void]$list.Add(@{ Id = 'svc_tasks'; Group = 'Svc'; Name = 'Extra diagnostic and feedback tasks off'; Impact = 1; Gain = @('Background')
+        Desc = 'Disables scheduled tasks for error-report queueing, feedback prompts, maps updates, disk-diagnostic data collection and power-efficiency analysis. These wake up at random and use disk and CPU.'
+        Rec = $true
+        Tasks = @( '\Microsoft\Windows\Windows Error Reporting\QueueReporting', '\Microsoft\Windows\Feedback\Siuf\DmClient', '\Microsoft\Windows\Feedback\Siuf\DmClientOnScenarioDownload',
+                   '\Microsoft\Windows\Maps\MapsUpdateTask', '\Microsoft\Windows\Maps\MapsToastTask', '\Microsoft\Windows\DiskDiagnostic\Microsoft-Windows-DiskDiagnosticDataCollector',
+                   '\Microsoft\Windows\Power Efficiency Diagnostics\AnalyzeSystem', '\Microsoft\Windows\DiskFootprint\Diagnostics', '\Microsoft\Windows\Autochk\Proxy' ) })
+    [void]$list.Add(@{ Id = 'svc_wer'; Group = 'Svc'; Name = 'Windows Error Reporting off'; Impact = 0; Gain = @('Background')
+        Desc = 'Stops crash reports from being collected and uploaded. Saves a burst of disk and CPU after every crash.'
+        Note = 'You lose Windows crash dumps, which makes debugging a crash harder.'
+        Rec = $true
+        Reg = @( (RegItem 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting' 'Disabled' 1), (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting' 'Disabled' 1) )
+        Svc = @( @{ N = 'WerSvc'; S = 'Disabled'; Stop = $true; D = 'Manual' } ) })
+
+    # ======================= BACKGROUND LOAD (more) =======================
+    [void]$list.Add(@{ Id = 'bg_onedrive'; Group = 'Bg'; Name = 'OneDrive sync off (policy)'; Impact = 1; Gain = @('Background')
+        Desc = 'Blocks OneDrive from syncing and from running in the background. Your files are not deleted. Use the Debloat tab if you want to uninstall it entirely.'
+        Rec = $false
+        Reg = @( (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OneDrive' 'DisableFileSyncNGSC' 1) ) })
+    [void]$list.Add(@{ Id = 'bg_toasts'; Group = 'Bg'; Name = 'Toast notifications off'; Impact = 0; Gain = @('Comfort')
+        Desc = 'No more notification pop-ups sliding in over your game or stealing focus.'
+        Rec = $false
+        Reg = @( (RegItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' 'ToastEnabled' 0) ) })
+    [void]$list.Add(@{ Id = 'bg_highlights'; Group = 'Bg'; Name = 'Search highlights off'; Impact = 0; Gain = @('Background'); Explorer = $true
+        Desc = 'Removes the daily doodle and trending content from the search box, which loads web content in the background.'
+        Rec = $true
+        Reg = @( (RegItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings' 'IsDynamicSearchBoxEnabled' 0) ) })
+
+    # ======================= PRIVACY, AI & ADS =======================
+    [void]$list.Add(@{ Id = 'prv_copilot'; Group = 'Priv'; Name = 'Windows Copilot off'; Impact = 1; Gain = @('Background')
+        Desc = 'Disables the Copilot sidebar and its background components via policy.'
+        Rec = $true
+        When = { if ($script:Facts.Win11) { $true } else { 'Windows 11 only' } }
+        Reg = @( (RegItem 'HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot' 1), (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsCopilot' 'TurnOffWindowsCopilot' 1) ) })
+    [void]$list.Add(@{ Id = 'prv_recall'; Group = 'Priv'; Name = 'Recall / AI data analysis off'; Impact = 1; Gain = @('Background')
+        Desc = 'Disables Windows AI snapshotting and on-device data analysis. These can run NPU, GPU or disk work in the background. Harmless if the feature is not on your PC.'
+        Rec = $true
+        When = { if ($script:Facts.Build -ge 22621) { $true } else { 'Needs Windows 11 22H2 or newer' } }
+        Reg = @( (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' 1), (RegItem 'HKCU:\Software\Policies\Microsoft\Windows\WindowsAI' 'DisableAIDataAnalysis' 1) ) })
+    [void]$list.Add(@{ Id = 'prv_cortana'; Group = 'Priv'; Name = 'Cortana and web search off'; Impact = 0; Gain = @('Background')
+        Desc = 'Disables Cortana, location use in search and web results in Windows Search.'
+        Rec = $true
+        Reg = @( (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'AllowCortana' 0), (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'AllowSearchToUseLocation' 0),
+                 (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'ConnectedSearchUseWeb' 0), (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'DisableWebSearch' 1) ) })
+    [void]$list.Add(@{ Id = 'prv_activity'; Group = 'Priv'; Name = 'Activity history off'; Impact = 0; Gain = @('Background')
+        Desc = 'Stops Windows from logging and syncing what you open, which writes to disk constantly.'
+        Rec = $true
+        Reg = @( (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'EnableActivityFeed' 0), (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'PublishUserActivities' 0), (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System' 'UploadUserActivities' 0) ) })
+    [void]$list.Add(@{ Id = 'prv_adid'; Group = 'Priv'; Name = 'Advertising ID and tailored ads off'; Impact = 0; Gain = @('Comfort')
+        Desc = 'Turns off the per-user ad identifier and "tailored experiences" built from your diagnostic data.'
+        Rec = $true
+        Reg = @( (RegItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo' 'Enabled' 0), (RegItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy' 'TailoredExperiencesWithDiagnosticDataEnabled' 0),
+                 (RegItem 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo' 'DisabledByGroupPolicy' 1) ) })
+    [void]$list.Add(@{ Id = 'prv_input'; Group = 'Priv'; Name = 'Typing and inking data collection off'; Impact = 0; Gain = @('Comfort')
+        Desc = 'Stops Windows from collecting what you type and write to personalize suggestions.'
+        Rec = $true
+        Reg = @( (RegItem 'HKCU:\Software\Microsoft\InputPersonalization' 'RestrictImplicitTextCollection' 1), (RegItem 'HKCU:\Software\Microsoft\InputPersonalization' 'RestrictImplicitInkCollection' 1),
+                 (RegItem 'HKCU:\Software\Microsoft\Personalization\Settings' 'AcceptedPrivacyPolicy' 0) ) })
+    [void]$list.Add(@{ Id = 'prv_spotlight'; Group = 'Priv'; Name = 'Lock screen and Spotlight ads off'; Impact = 0; Gain = @('Comfort')
+        Desc = 'Removes Spotlight promotions, fun facts and suggested apps from the lock screen and Settings.'
+        Rec = $true
+        Reg = @( (RegItem $cdm 'RotatingLockScreenOverlayEnabled' 0), (RegItem $cdm 'SubscribedContent-338387Enabled' 0), (RegItem $cdm 'SubscribedContent-353694Enabled' 0),
+                 (RegItem $cdm 'SubscribedContent-353696Enabled' 0), (RegItem $cdm 'SubscribedContent-310093Enabled' 0), (RegItem $cdm 'ContentDeliveryAllowed' 0), (RegItem $cdm 'OemPreInstalledAppsEnabled' 0), (RegItem $cdm 'PreInstalledAppsEnabled' 0) ) })
+
+    # ======================= VISUAL EFFECTS =======================
+    [void]$list.Add(@{ Id = 'vis_snappy'; Group = 'Vis'; Name = 'Snappier interface (no animations)'; Impact = 0; Gain = @('Comfort'); Explorer = $true
+        Desc = 'Removes menu delay, window minimize/maximize animation, taskbar animations and Aero Peek delay. Windows feels instant. Saves a sliver of GPU on integrated graphics.'
+        Rec = $false
+        Reg = @( (RegItem 'HKCU:\Control Panel\Desktop' 'MenuShowDelay' '0' 'String'), (RegItem 'HKCU:\Control Panel\Desktop\WindowMetrics' 'MinAnimate' '0' 'String'),
+                 (RegItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarAnimations' 0), (RegItem 'HKCU:\Software\Microsoft\Windows\DWM' 'EnableAeroPeek' 0),
+                 (RegItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ListviewAlphaSelect' 0), (RegItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ListviewShadow' 0) ) })
+
+    return $list.ToArray()
 }
 # ---- findings: what is actually limiting this PC -------------------------------
 function Get-Findings {
@@ -1260,6 +1505,188 @@ function New-RestorePoint {
         if ($null -eq $old) { Remove-RegValue $key 'SystemRestorePointCreationFrequency' } else { Set-Reg $key 'SystemRestorePointCreationFrequency' $old }
     }
 }
+# ---- debloat -------------------------------------------------------------------
+# Safe = recommended removal for nearly everyone. Optional = real apps some people use.
+function Get-DebloatCatalog {
+    $rows = @(
+        # Microsoft apps almost nobody uses
+        ,@('3D Viewer',                 'ms',    $true,  @('Microsoft.Microsoft3DViewer'))
+        ,@('Mixed Reality Portal',      'ms',    $true,  @('Microsoft.MixedReality.Portal'))
+        ,@('Paint 3D',                  'ms',    $true,  @('Microsoft.MSPaint'))
+        ,@('Print 3D',                  'ms',    $true,  @('Microsoft.Print3D'))
+        ,@('Clipchamp video editor',    'ms',    $true,  @('Clipchamp.Clipchamp'))
+        ,@('Cortana',                   'ms',    $true,  @('Microsoft.549981C3F5F10'))
+        ,@('Copilot app',               'ms',    $true,  @('Microsoft.Copilot', 'Microsoft.Windows.Ai.Copilot.Provider'))
+        ,@('Feedback Hub',              'ms',    $true,  @('Microsoft.WindowsFeedbackHub'))
+        ,@('Get Help',                  'ms',    $true,  @('Microsoft.GetHelp'))
+        ,@('Tips / Get Started',        'ms',    $true,  @('Microsoft.Getstarted'))
+        ,@('Maps',                      'ms',    $true,  @('Microsoft.WindowsMaps'))
+        ,@('News',                      'ms',    $true,  @('Microsoft.BingNews'))
+        ,@('Weather',                   'ms',    $true,  @('Microsoft.BingWeather'))
+        ,@('Bing Search',               'ms',    $true,  @('Microsoft.BingSearch'))
+        ,@('Bing Finance / Sports / Travel / Food', 'ms', $true, @('Microsoft.BingFinance', 'Microsoft.BingSports', 'Microsoft.BingTranslator', 'Microsoft.BingTravel', 'Microsoft.BingFoodAndDrink', 'Microsoft.BingHealthAndFitness'))
+        ,@('Solitaire Collection',      'ms',    $true,  @('Microsoft.MicrosoftSolitaireCollection'))
+        ,@('Microsoft 365 hub',         'ms',    $true,  @('Microsoft.MicrosoftOfficeHub'))
+        ,@('OneNote (Store)',           'ms',    $true,  @('Microsoft.Office.OneNote'))
+        ,@('Sway',                      'ms',    $true,  @('Microsoft.Office.Sway'))
+        ,@('Skype',                     'ms',    $true,  @('Microsoft.SkypeApp'))
+        ,@('Teams (consumer)',          'ms',    $true,  @('MicrosoftTeams', 'MSTeams'))
+        ,@('People',                    'ms',    $true,  @('Microsoft.People'))
+        ,@('Mail and Calendar',         'ms',    $true,  @('microsoft.windowscommunicationsapps'))
+        ,@('New Outlook',               'ms',    $true,  @('Microsoft.OutlookForWindows'))
+        ,@('Phone Link',                'ms',    $true,  @('Microsoft.YourPhone', 'MicrosoftWindows.CrossDevice'))
+        ,@('Power Automate',            'ms',    $true,  @('Microsoft.PowerAutomateDesktop'))
+        ,@('Microsoft To Do',           'ms',    $true,  @('Microsoft.Todos'))
+        ,@('Whiteboard',                'ms',    $true,  @('Microsoft.Whiteboard'))
+        ,@('Journal',                   'ms',    $true,  @('Microsoft.MicrosoftJournal'))
+        ,@('Wallet',                    'ms',    $true,  @('Microsoft.Wallet'))
+        ,@('Movies and TV',             'ms',    $true,  @('Microsoft.ZuneVideo'))
+        ,@('Microsoft Family',          'ms',    $true,  @('MicrosoftCorporationII.MicrosoftFamily'))
+        ,@('Dev Home',                  'ms',    $true,  @('Microsoft.Windows.DevHome'))
+        ,@('Messaging / OneConnect',    'ms',    $true,  @('Microsoft.Messaging', 'Microsoft.OneConnect'))
+        ,@('Power BI',                  'ms',    $true,  @('Microsoft.MicrosoftPowerBIForWindows'))
+        ,@('Network Speed Test',        'ms',    $true,  @('Microsoft.NetworkSpeedTest'))
+        ,@('Edge Game Assist',          'ms',    $true,  @('Microsoft.Edge.GameAssist'))
+        # Preinstalled third-party promos
+        ,@('Spotify',                   'promo', $true,  @('SpotifyAB.SpotifyMusic'))
+        ,@('Disney+',                   'promo', $true,  @('Disney.37853FC22B2CE'))
+        ,@('Netflix',                   'promo', $true,  @('4DF9E0F8.Netflix'))
+        ,@('Prime Video',               'promo', $true,  @('AmazonVideo.PrimeVideo'))
+        ,@('Hulu',                      'promo', $true,  @('HULULLC.HULUPLUS'))
+        ,@('TikTok',                    'promo', $true,  @('BytedancePte.Ltd.TikTok'))
+        ,@('Instagram',                 'promo', $true,  @('Facebook.InstagramBeta'))
+        ,@('Facebook',                  'promo', $true,  @('Facebook.Facebook'))
+        ,@('Twitter / X',               'promo', $true,  @('9E2F88E3.Twitter'))
+        ,@('LinkedIn',                  'promo', $true,  @('7EE7776C.LinkedInforWindows'))
+        ,@('Candy Crush and King games','promo', $true,  @('king.com.*'))
+        ,@('Duolingo',                  'promo', $true,  @('*Duolingo*'))
+        ,@('Adobe Express / Photoshop Express', 'promo', $true, @('*AdobeExpress*', 'AdobeSystemsIncorporated.AdobePhotoshopExpress'))
+        ,@('Pandora / iHeartRadio / Shazam', 'promo', $true, @('*Pandora*', '*iHeartRadio*', '*Shazam*'))
+        ,@('PicsArt / Flipboard / Viber', 'promo', $true, @('*PicsArt*', '*Flipboard*', '*Viber*'))
+        ,@('Gameloft and mobile games', 'promo', $true,  @('*GameloftSA*', '*Asphalt8*', '*MarchofEmpires*', '*RoyalRevolt*', '*HiddenCity*', '*CookingFever*', '*FarmVille*', '*BubbleWitch*'))
+        ,@('Eclipse Manager / Actipro / SketchBook', 'promo', $true, @('*EclipseManager*', '*ActiproSoftwareLLC*', '*AutodeskSketchBook*'))
+        ,@('McAfee (Store trial)',      'promo', $true,  @('*McAfee*'))
+        # Xbox and gaming (needed for Game Pass, Minecraft launcher sign-in, etc.)
+        ,@('Xbox app',                  'xbox',  $false, @('Microsoft.GamingApp', 'Microsoft.XboxApp'))
+        ,@('Xbox Game Bar overlays',    'xbox',  $false, @('Microsoft.XboxGamingOverlay', 'Microsoft.XboxGameOverlay', 'Microsoft.XboxSpeechToTextOverlay'))
+        ,@('Xbox identity + Gaming Services', 'xbox', $false, @('Microsoft.XboxIdentityProvider', 'Microsoft.GamingServices', 'Microsoft.Xbox.TCUI'))
+        ,@('Minecraft Launcher (Store)', 'xbox', $false, @('Microsoft.MinecraftUWP', 'Microsoft.4297127D64EC6'))
+        # Other optional
+        ,@('Media Player',              'opt',   $false, @('Microsoft.ZuneMusic'))
+        ,@('Sticky Notes',              'opt',   $false, @('Microsoft.MicrosoftStickyNotes'))
+        ,@('Alarms and Clock',          'opt',   $false, @('Microsoft.WindowsAlarms'))
+        ,@('Camera',                    'opt',   $false, @('Microsoft.WindowsCamera'))
+        ,@('Sound Recorder',            'opt',   $false, @('Microsoft.WindowsSoundRecorder'))
+        ,@('Quick Assist',              'opt',   $false, @('MicrosoftCorporationII.QuickAssist'))
+        ,@('Remote Desktop (Store)',    'opt',   $false, @('Microsoft.RemoteDesktop'))
+        ,@('Dolby Access',              'opt',   $false, @('DolbyLaboratories.DolbyAccess'))
+        ,@('Widgets provider',          'opt',   $false, @('MicrosoftWindows.Client.WebExperience'))
+    )
+    $out = New-Object System.Collections.ArrayList
+    $i = 0
+    foreach ($r in $rows) {
+        $i++
+        [void]$out.Add(@{ Id = ('d{0:D3}' -f $i); Name = $r[0]; Cat = $r[1]; Safe = $r[2]; Patterns = @($r[3]) })
+    }
+    [void]$out.Add(@{ Id = 'donedrive'; Name = 'OneDrive (uninstall the program)'; Cat = 'opt'; Safe = $false; Patterns = @(); Special = 'onedrive' })
+    return $out.ToArray()
+}
+
+$script:DebloatCats = [ordered]@{
+    ms    = 'Microsoft apps almost nobody uses'
+    promo = 'Preinstalled promos and trial apps'
+    xbox  = 'Xbox and gaming services (needed for Game Pass)'
+    opt   = 'Other optional apps'
+}
+
+# Self-contained (runs in a background runspace). Returns installed package names.
+$script:DebloatScan = {
+    $names = New-Object System.Collections.Generic.List[string]
+    try { foreach ($p in (Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue)) { if (-not $p.NonRemovable -and -not $p.IsFramework) { $names.Add([string]$p.Name) } } } catch { }
+    try { foreach ($p in (Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue)) { $names.Add([string]$p.DisplayName) } } catch { }
+    $od = @("$env:SystemRoot\SysWOW64\OneDriveSetup.exe", "$env:SystemRoot\System32\OneDriveSetup.exe") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ($od) { $names.Add('__onedrive__') }
+    ,($names | Sort-Object -Unique)
+}
+
+$script:DebloatWork = {
+    param($Items)
+    $all  = @(); $prov = @()
+    try { $all  = @(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue) } catch { }
+    try { $prov = @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue) } catch { }
+    foreach ($it in $Items) {
+        $Q.Enqueue(@{ Kind = 'start'; Id = $it.Id })
+        $removed = 0; $err = $null
+        try {
+            if ($it.Special -eq 'onedrive') {
+                Get-Process -Name OneDrive -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+                $exe = @("$env:SystemRoot\SysWOW64\OneDriveSetup.exe", "$env:SystemRoot\System32\OneDriveSetup.exe") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+                if ($exe) { Start-Process -FilePath $exe -ArgumentList '/uninstall' -Wait -WindowStyle Hidden; $removed++ }
+            } else {
+                foreach ($pat in $it.Patterns) {
+                    foreach ($p in @($all | Where-Object { $_.Name -like $pat -and -not $_.NonRemovable -and -not $_.IsFramework })) {
+                        try { Remove-AppxPackage -Package $p.PackageFullName -AllUsers -ErrorAction Stop; $removed++ }
+                        catch { try { Remove-AppxPackage -Package $p.PackageFullName -ErrorAction Stop; $removed++ } catch { $err = $_.Exception.Message } }
+                    }
+                    foreach ($pp in @($prov | Where-Object { $_.DisplayName -like $pat })) {
+                        try { [void](Remove-AppxProvisionedPackage -Online -PackageName $pp.PackageName -ErrorAction Stop) } catch { }
+                    }
+                }
+            }
+        } catch { $err = $_.Exception.Message }
+        $Q.Enqueue(@{ Kind = 'done'; Id = $it.Id; Removed = $removed; Err = $err })
+    }
+}
+
+# ---- startup manager -------------------------------------------------------------
+$script:StartupKeep = 'SecurityHealth|Windows Defender|Realtek|RtkAud|Audio|NVIDIA|NvBackend|Intel.*Graphics|IgfxTray|AMD|RadeonSoftware|Synaptics|Touchpad|Bluetooth|OneDrive'
+
+function Get-StartupEnabled {
+    param([string]$Key, [string]$Name)
+    $v = Get-RegValue $Key $Name $null
+    # Get-RegValue's return unrolls byte[] into object[], so test for any array
+    if ($v -is [System.Array] -and $v.Count -gt 0) { return (([int]$v[0] -band 1) -eq 0) }
+    return $true
+}
+
+function Set-StartupEnabled {
+    param([string]$Key, [string]$Name, [bool]$On)
+    if ($On) { $b = [byte[]]@(2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0) }
+    else     { $b = [byte[]](@(3, 0, 0, 0) + [BitConverter]::GetBytes([DateTime]::UtcNow.ToFileTimeUtc())) }
+    Set-Reg $Key $Name $b 'Binary'
+}
+
+function Get-StartupItems {
+    $items = New-Object System.Collections.ArrayList
+    $appr = 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved'
+    $defs = @(
+        @{ Run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; App = "HKCU:\$appr\Run"; Scope = 'Your account' }
+        @{ Run = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'; App = "HKLM:\$appr\Run"; Scope = 'All users' }
+        @{ Run = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'; App = "HKLM:\$appr\Run32"; Scope = 'All users (32-bit)' }
+    )
+    foreach ($d in $defs) {
+        try {
+            $k = Get-Item -LiteralPath $d.Run -ErrorAction Stop
+            foreach ($n in $k.GetValueNames()) {
+                if (-not $n) { continue }
+                [void]$items.Add([pscustomobject]@{ Name = $n; Command = [string]$k.GetValue($n); Scope = $d.Scope; Key = $d.App; Enabled = (Get-StartupEnabled $d.App $n) })
+            }
+        } catch { }
+    }
+    $folders = @(
+        @{ Dir = [Environment]::GetFolderPath('Startup');       App = "HKCU:\$appr\StartupFolder"; Scope = 'Startup folder' }
+        @{ Dir = [Environment]::GetFolderPath('CommonStartup'); App = "HKLM:\$appr\StartupFolder"; Scope = 'Startup folder (all users)' }
+    )
+    foreach ($f in $folders) {
+        try {
+            if (-not $f.Dir -or -not (Test-Path -LiteralPath $f.Dir)) { continue }
+            foreach ($file in (Get-ChildItem -LiteralPath $f.Dir -File -ErrorAction Stop | Where-Object { $_.Name -ne 'desktop.ini' })) {
+                [void]$items.Add([pscustomobject]@{ Name = $file.Name; Command = $file.FullName; Scope = $f.Scope; Key = $f.App; Enabled = (Get-StartupEnabled $f.App $file.Name) })
+            }
+        } catch { }
+    }
+    return @($items | Sort-Object Name)
+}
 # ---- UI definition (XAML) -----------------------------------------------------
 $script:Xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -1327,12 +1754,25 @@ $script:Xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="b" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="{TemplateBinding Padding}">
+            <Border x:Name="b" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="{TemplateBinding Padding}" RenderTransformOrigin="0.5,0.5">
+              <Border.RenderTransform><ScaleTransform x:Name="bs" ScaleX="1" ScaleY="1"/></Border.RenderTransform>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Opacity" Value="0.86"/></Trigger>
-              <Trigger Property="IsPressed" Value="True"><Setter TargetName="b" Property="Opacity" Value="0.7"/></Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Trigger.EnterActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="b" Storyboard.TargetProperty="Opacity" To="0.82" Duration="0:0:0.12"/></Storyboard></BeginStoryboard></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="b" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.18"/></Storyboard></BeginStoryboard></Trigger.ExitActions>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="bs" Storyboard.TargetProperty="ScaleX" To="0.965" Duration="0:0:0.07"/>
+                  <DoubleAnimation Storyboard.TargetName="bs" Storyboard.TargetProperty="ScaleY" To="0.965" Duration="0:0:0.07"/>
+                </Storyboard></BeginStoryboard></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="bs" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.14"/>
+                  <DoubleAnimation Storyboard.TargetName="bs" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.14"/>
+                </Storyboard></BeginStoryboard></Trigger.ExitActions>
+              </Trigger>
               <Trigger Property="IsEnabled" Value="False"><Setter TargetName="b" Property="Opacity" Value="0.4"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -1387,6 +1827,7 @@ $script:Xaml = @'
               <Border.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
                   <GradientStop Color="#F58A55" Offset="0"/>
+                  <GradientStop x:Name="hlStop" Color="#FFC6A0" Offset="0"/>
                   <GradientStop Color="#E0612B" Offset="1"/>
                 </LinearGradientBrush>
               </Border.Background>
@@ -1424,17 +1865,23 @@ $script:Xaml = @'
         <Setter.Value>
           <ControlTemplate TargetType="CheckBox">
             <StackPanel Orientation="Horizontal" Background="Transparent">
-              <Border x:Name="track" Width="38" Height="21" CornerRadius="10.5" Background="#2B323D" VerticalAlignment="Center">
+              <Border x:Name="track" Width="38" Height="21" CornerRadius="10.5" VerticalAlignment="Center">
+                <Border.Background><SolidColorBrush Color="#2B323D"/></Border.Background>
                 <Ellipse x:Name="knob" Width="15" Height="15" Fill="#C9D0DA" HorizontalAlignment="Left" Margin="3,0,0,0"/>
               </Border>
               <ContentPresenter Margin="10,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
             <ControlTemplate.Triggers>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="track" Property="Background" Value="{StaticResource Accent}"/>
-                <Setter TargetName="knob" Property="HorizontalAlignment" Value="Right"/>
-                <Setter TargetName="knob" Property="Margin" Value="0,0,3,0"/>
                 <Setter TargetName="knob" Property="Fill" Value="#FFFFFF"/>
+                <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                  <ThicknessAnimation Storyboard.TargetName="knob" Storyboard.TargetProperty="Margin" To="20,0,0,0" Duration="0:0:0.18"><ThicknessAnimation.EasingFunction><BackEase EasingMode="EaseOut" Amplitude="0.35"/></ThicknessAnimation.EasingFunction></ThicknessAnimation>
+                  <ColorAnimation Storyboard.TargetName="track" Storyboard.TargetProperty="Background.Color" To="#E8743B" Duration="0:0:0.18"/>
+                </Storyboard></BeginStoryboard></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                  <ThicknessAnimation Storyboard.TargetName="knob" Storyboard.TargetProperty="Margin" To="3,0,0,0" Duration="0:0:0.16"/>
+                  <ColorAnimation Storyboard.TargetName="track" Storyboard.TargetProperty="Background.Color" To="#2B323D" Duration="0:0:0.16"/>
+                </Storyboard></BeginStoryboard></Trigger.ExitActions>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
             </ControlTemplate.Triggers>
@@ -1537,14 +1984,16 @@ $script:Xaml = @'
       <Grid x:Name="landing" Background="Transparent">
         <Border CornerRadius="14">
           <Border.Background>
-            <RadialGradientBrush Center="0.5,0.46" GradientOrigin="0.5,0.46" RadiusX="0.62" RadiusY="0.62">
+            <RadialGradientBrush x:Name="bgGrad" Center="0.5,0.46" GradientOrigin="0.5,0.46" RadiusX="0.62" RadiusY="0.62">
               <GradientStop Color="#1FE8743B" Offset="0"/>
               <GradientStop Color="#0AE8743B" Offset="0.45"/>
               <GradientStop Color="#00000000" Offset="1"/>
             </RadialGradientBrush>
           </Border.Background>
         </Border>
-        <Ellipse x:Name="glow" Width="560" Height="560" IsHitTestVisible="False" Opacity="0.55" Margin="0,0,0,40">
+        <Canvas x:Name="particles" IsHitTestVisible="False" ClipToBounds="True"/>
+        <Ellipse x:Name="glow" Width="560" Height="560" IsHitTestVisible="False" Opacity="0.55" Margin="0,0,0,40" RenderTransformOrigin="0.5,0.5">
+          <Ellipse.RenderTransform><ScaleTransform x:Name="glowScale" ScaleX="1" ScaleY="1"/></Ellipse.RenderTransform>
           <Ellipse.Fill>
             <RadialGradientBrush>
               <GradientStop Color="#2CE8743B" Offset="0"/>
@@ -1553,43 +2002,47 @@ $script:Xaml = @'
           </Ellipse.Fill>
         </Ellipse>
 
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,10,10,0">
+        <StackPanel x:Name="lnChrome" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,10,10,0" Opacity="0">
           <Button x:Name="lnMin" Style="{StaticResource Chrome}" Content="&#xE921;"/>
           <Button x:Name="lnClose" Style="{StaticResource Chrome}" Content="&#xE8BB;"/>
         </StackPanel>
 
-        <StackPanel x:Name="hero" HorizontalAlignment="Center" VerticalAlignment="Center" Opacity="0" Margin="0,-10,0,0">
-          <StackPanel.RenderTransform><TranslateTransform x:Name="heroShift" Y="18"/></StackPanel.RenderTransform>
+        <StackPanel x:Name="hero" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-10,0,0">
+          <Grid x:Name="logoWrap" Width="96" Height="96" HorizontalAlignment="Center" Opacity="0" RenderTransformOrigin="0.5,0.5">
+            <Grid.RenderTransform><ScaleTransform x:Name="logoScale" ScaleX="0.5" ScaleY="0.5"/></Grid.RenderTransform>
+            <Ellipse x:Name="ring" Width="96" Height="96" Stroke="#66E8743B" StrokeThickness="1.4" StrokeDashArray="2.5 5" RenderTransformOrigin="0.5,0.5">
+              <Ellipse.RenderTransform><RotateTransform x:Name="ringRot" Angle="0"/></Ellipse.RenderTransform>
+            </Ellipse>
+            <Border Width="68" Height="68" CornerRadius="18" BorderBrush="#55E8743B" BorderThickness="1" Background="#14E8743B">
+              <Border.Effect><DropShadowEffect x:Name="logoFx" Color="#E8743B" BlurRadius="26" Opacity="0.35" ShadowDepth="0"/></Border.Effect>
+              <Viewbox Width="30" Height="30">
+                <Path Data="M 15,1 L 3,17 L 11,17 L 9,29 L 23,11 L 14,11 Z" Fill="{StaticResource Accent}"/>
+              </Viewbox>
+            </Border>
+          </Grid>
 
-          <Border Width="68" Height="68" CornerRadius="18" HorizontalAlignment="Center" BorderBrush="#55E8743B" BorderThickness="1" Background="#14E8743B">
-            <Border.Effect><DropShadowEffect Color="#E8743B" BlurRadius="26" Opacity="0.35" ShadowDepth="0"/></Border.Effect>
-            <Viewbox Width="30" Height="30">
-              <Path Data="M 15,1 L 3,17 L 11,17 L 9,29 L 23,11 L 14,11 Z" Fill="{StaticResource Accent}"/>
-            </Viewbox>
-          </Border>
+          <TextBlock x:Name="lnTag" Opacity="0" Margin="0,26,0,0" HorizontalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource Dim}"/>
+          <StackPanel x:Name="lnTitle" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0"/>
+          <TextBlock x:Name="lnSub" Opacity="0" Margin="0,2,0,0" HorizontalAlignment="Center" FontFamily="Bahnschrift, Segoe UI Semibold" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource Accent}"/>
+          <TextBlock x:Name="lnLine" Opacity="0" Margin="0,24,0,0" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="500" FontSize="14" LineHeight="22" Foreground="{StaticResource Muted}"
+                     Text="Higher FPS and tighter 1% lows: real Windows, scheduler and GPU tweaks, a full app debloat and a startup cleaner. Every change is journaled and fully reversible, and every toggle tells you what it is actually worth."/>
 
-          <TextBlock x:Name="lnTag" Margin="0,30,0,0" HorizontalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource Dim}"/>
-          <TextBlock x:Name="lnTitle" Margin="0,10,0,0" HorizontalAlignment="Center" FontFamily="Bahnschrift, Segoe UI Semibold" FontSize="64" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
-          <TextBlock x:Name="lnSub" Margin="0,2,0,0" HorizontalAlignment="Center" FontFamily="Bahnschrift, Segoe UI Semibold" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource Accent}"/>
-          <TextBlock x:Name="lnLine" Margin="0,26,0,0" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="470" FontSize="14" LineHeight="22" Foreground="{StaticResource Muted}"
-                     Text="Tune Windows for higher FPS and steadier frametimes. Every change is journaled and fully reversible, and every toggle tells you what it is actually worth."/>
+          <Button x:Name="btnEnter" Opacity="0" Style="{StaticResource Enter}" HorizontalAlignment="Center" Margin="0,36,0,0"/>
 
-          <Button x:Name="btnEnter" Style="{StaticResource Enter}" HorizontalAlignment="Center" Margin="0,38,0,0"/>
-
-          <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,34,0,0">
-            <Border Background="{StaticResource Bg1}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="14" Padding="12,5" Margin="4,0">
+          <StackPanel x:Name="lnChips" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,32,0,0">
+            <Border x:Name="chipA" Opacity="0" Background="{StaticResource Bg1}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="14" Padding="12,5" Margin="4,0">
               <TextBlock Text="Fully reversible" FontSize="11.5" Foreground="{StaticResource Muted}"/>
             </Border>
-            <Border Background="{StaticResource Bg1}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="14" Padding="12,5" Margin="4,0">
+            <Border x:Name="chipB" Opacity="0" Background="{StaticResource Bg1}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="14" Padding="12,5" Margin="4,0">
               <TextBlock Text="No game injection" FontSize="11.5" Foreground="{StaticResource Muted}"/>
             </Border>
-            <Border Background="{StaticResource Bg1}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="14" Padding="12,5" Margin="4,0">
+            <Border x:Name="chipC" Opacity="0" Background="{StaticResource Bg1}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="14" Padding="12,5" Margin="4,0">
               <TextBlock Text="Honest impact ratings" FontSize="11.5" Foreground="{StaticResource Muted}"/>
             </Border>
           </StackPanel>
         </StackPanel>
 
-        <TextBlock x:Name="lnSys" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,22" FontSize="11.5" Foreground="{StaticResource Dim}"/>
+        <TextBlock x:Name="lnSys" Opacity="0" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,22" FontSize="11.5" Foreground="{StaticResource Dim}"/>
       </Grid>
 
       <!-- ===================== APP ===================== -->
@@ -1602,8 +2055,9 @@ $script:Xaml = @'
         <!-- sidebar -->
         <Border Grid.Column="0" Background="{StaticResource Bg1}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0" CornerRadius="14,0,0,14">
           <DockPanel LastChildFill="True">
-            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="22,24,16,22">
-              <Border Width="34" Height="34" CornerRadius="10" Background="#18E8743B" BorderBrush="#44E8743B" BorderThickness="1">
+            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="22,24,16,18">
+              <Border x:Name="sideLogo" Width="34" Height="34" CornerRadius="10" Background="#18E8743B" BorderBrush="#44E8743B" BorderThickness="1">
+                <Border.Effect><DropShadowEffect x:Name="sideFx" Color="#E8743B" BlurRadius="8" Opacity="0.3" ShadowDepth="0"/></Border.Effect>
                 <Viewbox Width="16" Height="16"><Path Data="M 15,1 L 3,17 L 11,17 L 9,29 L 23,11 L 14,11 Z" Fill="{StaticResource Accent}"/></Viewbox>
               </Border>
               <StackPanel Margin="11,0,0,0" VerticalAlignment="Center">
@@ -1612,27 +2066,34 @@ $script:Xaml = @'
               </StackPanel>
             </StackPanel>
 
-            <Border DockPanel.Dock="Bottom" Margin="14,10,14,16" Padding="12,10" Background="{StaticResource Bg2}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="10">
-              <StackPanel>
-                <StackPanel Orientation="Horizontal">
-                  <Ellipse x:Name="sideDot" Width="7" Height="7" Fill="{StaticResource Dim}" VerticalAlignment="Center"/>
-                  <TextBlock x:Name="sideTitle" Text="No active session" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource Text}" Margin="8,0,0,0"/>
+            <StackPanel DockPanel.Dock="Bottom" Margin="14,6,14,16">
+              <CheckBox x:Name="swMotion" Style="{StaticResource Switch}" Content="Animations" IsChecked="True" Foreground="{StaticResource Muted}" FontSize="12" Margin="6,0,0,10"/>
+              <Border Padding="12,10" Background="{StaticResource Bg2}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="10">
+                <StackPanel>
+                  <StackPanel Orientation="Horizontal">
+                    <Ellipse x:Name="sideDot" Width="7" Height="7" Fill="{StaticResource Dim}" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="sideTitle" Text="No active session" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource Text}" Margin="8,0,0,0"/>
+                  </StackPanel>
+                  <TextBlock x:Name="sideSub" Margin="15,3,0,0" FontSize="11" Foreground="{StaticResource Dim}" TextWrapping="Wrap"/>
                 </StackPanel>
-                <TextBlock x:Name="sideSub" Margin="15,3,0,0" FontSize="11" Foreground="{StaticResource Dim}" TextWrapping="Wrap"/>
-              </StackPanel>
-            </Border>
+              </Border>
+            </StackPanel>
 
-            <StackPanel DockPanel.Dock="Top">
+            <StackPanel x:Name="navPanel" DockPanel.Dock="Top">
               <RadioButton x:Name="navDash" Style="{StaticResource Nav}" GroupName="N" IsChecked="True">
                 <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE80F;"/><TextBlock Text="Dashboard"/></StackPanel></RadioButton>
               <RadioButton x:Name="navOpt" Style="{StaticResource Nav}" GroupName="N">
                 <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE945;"/><TextBlock Text="Optimize"/></StackPanel></RadioButton>
+              <RadioButton x:Name="navDebloat" Style="{StaticResource Nav}" GroupName="N">
+                <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE74D;"/><TextBlock Text="Debloat"/></StackPanel></RadioButton>
+              <RadioButton x:Name="navStartup" Style="{StaticResource Nav}" GroupName="N">
+                <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE7E8;"/><TextBlock Text="Startup"/></StackPanel></RadioButton>
               <RadioButton x:Name="navRust" Style="{StaticResource Nav}" GroupName="N">
                 <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE7FC;"/><TextBlock Text="Rust"/></StackPanel></RadioButton>
               <RadioButton x:Name="navSession" Style="{StaticResource Nav}" GroupName="N">
                 <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE768;"/><TextBlock Text="Game session"/></StackPanel></RadioButton>
               <RadioButton x:Name="navClean" Style="{StaticResource Nav}" GroupName="N">
-                <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE74D;"/><TextBlock Text="Cleaner"/></StackPanel></RadioButton>
+                <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE894;"/><TextBlock Text="Cleaner"/></StackPanel></RadioButton>
               <RadioButton x:Name="navLog" Style="{StaticResource Nav}" GroupName="N">
                 <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE8A5;"/><TextBlock Text="Activity log"/></StackPanel></RadioButton>
             </StackPanel>
@@ -1665,9 +2126,10 @@ $script:Xaml = @'
             <!-- Dashboard -->
             <ScrollViewer x:Name="pgDash" VerticalScrollBarVisibility="Auto">
               <StackPanel Margin="0,0,10,12">
+                <ProgressBar x:Name="countProxy" Minimum="0" Maximum="1000" Value="0" Visibility="Collapsed" Height="0"/>
                 <Grid>
                   <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                  <Border Grid.Column="0" Style="{StaticResource Card}">
+                  <Border x:Name="dCard1" Grid.Column="0" Style="{StaticResource Card}">
                     <StackPanel>
                       <TextBlock Text="THIS PC" FontSize="10.5" FontWeight="Bold" Foreground="{StaticResource Dim}"/>
                       <TextBlock x:Name="dCpu" Margin="0,10,0,0" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource Text}" TextWrapping="Wrap"/>
@@ -1676,7 +2138,7 @@ $script:Xaml = @'
                       <TextBlock x:Name="dOs" Margin="0,5,0,0" FontSize="12.5" Foreground="{StaticResource Muted}"/>
                     </StackPanel>
                   </Border>
-                  <Border Grid.Column="2" Style="{StaticResource Card}">
+                  <Border x:Name="dCard2" Grid.Column="2" Style="{StaticResource Card}">
                     <StackPanel>
                       <TextBlock Text="RECOMMENDED TWEAKS" FontSize="10.5" FontWeight="Bold" Foreground="{StaticResource Dim}"/>
                       <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
@@ -1687,7 +2149,7 @@ $script:Xaml = @'
                       <TextBlock x:Name="dAppliedNote" Margin="0,9,0,0" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
                     </StackPanel>
                   </Border>
-                  <Border Grid.Column="4" Style="{StaticResource Card}">
+                  <Border x:Name="dCard3" Grid.Column="4" Style="{StaticResource Card}">
                     <StackPanel>
                       <TextBlock Text="RUST" FontSize="10.5" FontWeight="Bold" Foreground="{StaticResource Dim}"/>
                       <TextBlock x:Name="dRust" Margin="0,10,0,0" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource Text}" TextWrapping="Wrap"/>
@@ -1842,6 +2304,47 @@ $script:Xaml = @'
               </Border>
             </Grid>
 
+            <!-- Debloat -->
+            <Grid x:Name="pgDebloat" Visibility="Collapsed">
+              <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+              <StackPanel Grid.Row="0">
+                <Border Style="{StaticResource Card}" Padding="14,10" Margin="0,0,0,10">
+                  <TextBlock FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                    Text="Removes preinstalled apps for every user and from the install image, so they do not come back for new accounts. Microsoft Store, Photos, Notepad, Calculator, Terminal, Snipping Tool, Paint and Edge are never touched. A restore point is made first, and anything can be reinstalled from the Microsoft Store."/>
+                </Border>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                  <Button x:Name="btnDbScan" Style="{StaticResource Btn}" Content="Scan this PC"/>
+                  <Button x:Name="btnDbSafe" Style="{StaticResource Btn}" Content="Select safe" Margin="8,0,0,0"/>
+                  <Button x:Name="btnDbAll" Style="{StaticResource Btn}" Content="Select all installed" Margin="8,0,0,0"/>
+                  <Button x:Name="btnDbNone" Style="{StaticResource Btn}" Content="Clear" Margin="8,0,0,0"/>
+                  <Button x:Name="btnDbRun" Style="{StaticResource BtnPrimary}" Content="Remove selected" Margin="8,0,0,0"/>
+                </StackPanel>
+              </StackPanel>
+              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="pnlDebloat" Margin="0,0,10,8"/></ScrollViewer>
+              <Border Grid.Row="2" Style="{StaticResource Card}" Padding="16,12" Margin="0,6,0,0">
+                <StackPanel>
+                  <DockPanel>
+                    <TextBlock x:Name="txtDbCount" DockPanel.Dock="Right" FontSize="13" FontWeight="Bold" Foreground="{StaticResource Accent}"/>
+                    <TextBlock x:Name="txtDbStatus" FontSize="12" Foreground="{StaticResource Muted}" Text="Press Scan to see which of these are installed."/>
+                  </DockPanel>
+                  <ProgressBar x:Name="barDb" Minimum="0" Maximum="100" Value="0" Margin="0,9,0,0"/>
+                </StackPanel>
+              </Border>
+            </Grid>
+
+            <!-- Startup -->
+            <Grid x:Name="pgStartup" Visibility="Collapsed">
+              <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+              <Border Grid.Row="0" Style="{StaticResource Card}" Padding="14,10" Margin="0,0,0,10">
+                <DockPanel>
+                  <Button x:Name="btnStRefresh" DockPanel.Dock="Right" Style="{StaticResource Btn}" Content="Refresh" Margin="14,0,0,0" VerticalAlignment="Center"/>
+                  <TextBlock FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                    Text="Programs that launch at sign-in and sit in the background using RAM and CPU. Turn off anything you do not need running while you play. This is instant and fully reversible. Leave audio, graphics driver and security entries alone."/>
+                </DockPanel>
+              </Border>
+              <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="pnlStartup" Margin="0,0,10,8"/></ScrollViewer>
+            </Grid>
+
             <!-- Log -->
             <Grid x:Name="pgLog" Visibility="Collapsed">
               <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
@@ -1871,6 +2374,9 @@ $script:Xaml = @'
                 <Ellipse Width="6" Height="6" Fill="{StaticResource Good}" VerticalAlignment="Center"/>
                 <TextBlock Text="Administrator" FontSize="11" Foreground="{StaticResource Dim}" Margin="7,0,0,0"/>
               </StackPanel>
+              <Ellipse x:Name="spin" DockPanel.Dock="Left" Width="12" Height="12" Stroke="{StaticResource Accent}" StrokeThickness="2" StrokeDashArray="2.4 2.6" Margin="0,0,10,0" Visibility="Collapsed" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5">
+                <Ellipse.RenderTransform><RotateTransform x:Name="spinRot" Angle="0"/></Ellipse.RenderTransform>
+              </Ellipse>
               <TextBlock x:Name="lastLog" FontSize="11.5" Foreground="{StaticResource Dim}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Text="Ready."/>
             </DockPanel>
           </Border>
@@ -1880,6 +2386,422 @@ $script:Xaml = @'
   </Border>
 </Window>
 '@
+# ---- animation engine -----------------------------------------------------------
+# Every animation checks $script:AnimOn, so the "Animations" switch in the sidebar turns them all off.
+$script:BaseOp = @{}
+
+function Get-Span { param([double]$Ms) return [TimeSpan]::FromMilliseconds($Ms) }
+function Get-Dur  { param([double]$Ms) return (New-Object Windows.Duration -ArgumentList ([TimeSpan]::FromMilliseconds($Ms))) }
+
+function New-Ease {
+    param([string]$Kind = 'Quad', [string]$Mode = 'EaseOut')
+    $e = switch ($Kind) {
+        'Back'  { New-Object Windows.Media.Animation.BackEase }
+        'Sine'  { New-Object Windows.Media.Animation.SineEase }
+        'Cubic' { New-Object Windows.Media.Animation.CubicEase }
+        default { New-Object Windows.Media.Animation.QuadraticEase }
+    }
+    if ($Kind -eq 'Back') { $e.Amplitude = 0.45 }
+    $e.EasingMode = $Mode
+    return $e
+}
+
+function New-DAnim {
+    param([double]$From, [double]$To, [double]$DurMs, [int]$Delay = 0, $Ease = $null)
+    $a = New-Object Windows.Media.Animation.DoubleAnimation
+    $a.From = $From
+    $a.To = $To
+    $a.Duration = Get-Dur $DurMs
+    if ($Delay -gt 0) { $a.BeginTime = Get-Span $Delay }
+    if ($Ease) { $a.EasingFunction = $Ease }
+    return $a
+}
+
+function Start-FadeSlide {
+    param($El, [int]$Delay = 0, [double]$Dy = 14, [double]$Dx = 0, [int]$Dur = 420)
+    if (-not $El) { return }
+    $key = $El.GetHashCode()
+    if (-not $script:BaseOp.ContainsKey($key)) { $script:BaseOp[$key] = $(if ($El.Opacity -gt 0.05) { [double]$El.Opacity } else { 1.0 }) }
+    $to = [double]$script:BaseOp[$key]
+    $opacity = [Windows.UIElement]::OpacityProperty
+    if (-not $script:AnimOn) {
+        $El.BeginAnimation($opacity, $null)
+        $El.Opacity = $to
+        $El.RenderTransform = [Windows.Media.Transform]::Identity
+        return
+    }
+    $tt = New-Object Windows.Media.TranslateTransform
+    $tt.X = $Dx; $tt.Y = $Dy
+    $El.RenderTransform = $tt
+    $El.Opacity = 0
+    $ease = New-Ease 'Quad' 'EaseOut'
+    $El.BeginAnimation($opacity, (New-DAnim 0 $to $Dur $Delay $ease))
+    if ($Dy -ne 0) { $tt.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, (New-DAnim $Dy 0 $Dur $Delay $ease)) }
+    if ($Dx -ne 0) { $tt.BeginAnimation([Windows.Media.TranslateTransform]::XProperty, (New-DAnim $Dx 0 $Dur $Delay $ease)) }
+}
+
+function Start-Pop {
+    param($El, [int]$Delay = 0, [double]$From = 0.6, [int]$Dur = 380)
+    if (-not $El -or -not $script:AnimOn) { return }
+    $El.RenderTransformOrigin = New-Object Windows.Point -ArgumentList 0.5, 0.5
+    $st = New-Object Windows.Media.ScaleTransform
+    $st.ScaleX = $From; $st.ScaleY = $From
+    $El.RenderTransform = $st
+    $ease = New-Ease 'Back' 'EaseOut'
+    $st.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, (New-DAnim $From 1 $Dur $Delay $ease))
+    $st.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty, (New-DAnim $From 1 $Dur $Delay $ease))
+}
+
+function Start-Forever {
+    param($Target, $Prop, [double]$From, [double]$To, [double]$Sec, [bool]$Reverse = $true, [string]$Kind = 'Sine')
+    if (-not $script:AnimOn -or -not $Target) { return }
+    $a = New-DAnim $From $To ($Sec * 1000)
+    $a.AutoReverse = $Reverse
+    $a.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+    if ($Reverse) { $a.EasingFunction = New-Ease $Kind 'EaseInOut' }
+    $Target.BeginAnimation($Prop, $a)
+}
+
+function Stop-Anim {
+    param($Target, $Prop)
+    try { if ($Target) { $Target.BeginAnimation($Prop, $null) } } catch { }
+}
+
+function Start-Stagger {
+    param($Panel, [int]$Max = 14, [int]$Step = 34, [int]$Base = 0, [double]$Dy = 12)
+    if (-not $Panel) { return }
+    $i = 0
+    foreach ($ch in @($Panel.Children)) {
+        if ($i -ge $Max) { break }
+        Start-FadeSlide $ch ($Base + $i * $Step) $Dy 0 360
+        $i++
+    }
+}
+
+function Set-BarAnimated {
+    param($Bar, [double]$Value)
+    $old = $Bar.Value
+    $Bar.Value = $Value
+    if (-not $script:AnimOn -or [math]::Abs($old - $Value) -lt 0.5) { return }
+    $a = New-DAnim $old $Value 650 0 (New-Ease 'Cubic' 'EaseOut')
+    $a.FillBehavior = 'Stop'
+    $Bar.BeginAnimation([Windows.Controls.Primitives.RangeBase]::ValueProperty, $a)
+}
+
+function Set-Spinner {
+    param([bool]$On)
+    $ui = $script:UI
+    if (-not $ui.spin) { return }
+    $prop = [Windows.Media.RotateTransform]::AngleProperty
+    if ($On) {
+        $ui.spin.Visibility = 'Visible'
+        Start-Forever $ui.spinRot $prop 0 360 0.9 $false
+    } else {
+        Stop-Anim $ui.spinRot $prop
+        $ui.spin.Visibility = 'Collapsed'
+    }
+}
+
+function Add-CardHover {
+    param($Card)
+    $Card.BorderBrush = New-Object Windows.Media.SolidColorBrush -ArgumentList ([Windows.Media.ColorConverter]::ConvertFromString('#232933'))
+    $Card.Add_MouseEnter({
+        param($s, $e)
+        if ($script:AnimOn) {
+            $ca = New-Object Windows.Media.Animation.ColorAnimation
+            $ca.To = [Windows.Media.ColorConverter]::ConvertFromString('#7A4527'); $ca.Duration = Get-Dur 140
+            $s.BorderBrush.BeginAnimation([Windows.Media.SolidColorBrush]::ColorProperty, $ca)
+        }
+    })
+    $Card.Add_MouseLeave({
+        param($s, $e)
+        if ($script:AnimOn) {
+            $ca = New-Object Windows.Media.Animation.ColorAnimation
+            $ca.To = [Windows.Media.ColorConverter]::ConvertFromString('#232933'); $ca.Duration = Get-Dur 240
+            $s.BorderBrush.BeginAnimation([Windows.Media.SolidColorBrush]::ColorProperty, $ca)
+        }
+    })
+}
+
+function Update-ApplyGlow {
+    $btn = $script:UI.btnOptApply
+    if (-not $btn) { return }
+    if ($script:Sel.Count -gt 0 -and $script:AnimOn) {
+        if (-not $btn.Effect) {
+            $fx = New-Object Windows.Media.Effects.DropShadowEffect
+            $fx.Color = [Windows.Media.ColorConverter]::ConvertFromString('#E8743B')
+            $fx.ShadowDepth = 0; $fx.Opacity = 0.85; $fx.BlurRadius = 6
+            $btn.Effect = $fx
+            Start-Forever $fx ([Windows.Media.Effects.DropShadowEffect]::BlurRadiusProperty) 4 22 1.0 $true
+        }
+    } else { $btn.Effect = $null }
+}
+
+function Set-Ambient {
+    # slow background pulses in the app shell
+    $ui = $script:UI
+    $blur = [Windows.Media.Effects.DropShadowEffect]::BlurRadiusProperty
+    if ($script:AnimOn) { Start-Forever $ui.sideFx $blur 6 18 2.8 $true }
+    else { Stop-Anim $ui.sideFx $blur }
+}
+
+function Start-Particles {
+    $ui = $script:UI
+    $c = $ui.particles
+    $c.Children.Clear()
+    if (-not $script:AnimOn) { return }
+    $w = $ui.landing.ActualWidth; if ($w -lt 200) { $w = 1100 }
+    $h = $ui.landing.ActualHeight; if ($h -lt 200) { $h = 720 }
+    $rnd = New-Object System.Random
+    for ($i = 0; $i -lt 16; $i++) {
+        $size = 2 + $rnd.NextDouble() * 2.6
+        $e = New-Object Windows.Shapes.Ellipse
+        $e.Width = $size; $e.Height = $size
+        $e.Fill = Get-Brush '#E8743B' (0.35 + $rnd.NextDouble() * 0.4)
+        [Windows.Controls.Canvas]::SetLeft($e, $rnd.NextDouble() * $w)
+        [Windows.Controls.Canvas]::SetTop($e, $h + 8)
+        $tt = New-Object Windows.Media.TranslateTransform
+        $e.RenderTransform = $tt
+        $e.Opacity = 0
+        [void]$c.Children.Add($e)
+        $dur = 9 + $rnd.NextDouble() * 8
+        $delay = [int]($rnd.NextDouble() * 7000)
+        $ya = New-DAnim 0 (-($h * 0.9 + $rnd.NextDouble() * 120)) ($dur * 1000) $delay
+        $ya.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+        $tt.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, $ya)
+        $ka = New-Object Windows.Media.Animation.DoubleAnimationUsingKeyFrames
+        $ka.Duration = Get-Dur ($dur * 1000)
+        $ka.BeginTime = Get-Span $delay
+        $ka.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+        foreach ($kf in @(@(0, 0.0), @(0.8, 0.2), @(0.8, 0.7), @(0, 1.0))) {
+            $frame = New-Object Windows.Media.Animation.LinearDoubleKeyFrame
+            $frame.Value = [double]$kf[0]
+            $frame.KeyTime = [Windows.Media.Animation.KeyTime]::FromPercent([double]$kf[1])
+            [void]$ka.KeyFrames.Add($frame)
+        }
+        $e.BeginAnimation([Windows.UIElement]::OpacityProperty, $ka)
+    }
+}
+
+function Stop-Particles {
+    $c = $script:UI.particles
+    foreach ($e in @($c.Children)) {
+        try { $e.RenderTransform.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, $null); $e.BeginAnimation([Windows.UIElement]::OpacityProperty, $null) } catch { }
+    }
+    $c.Children.Clear()
+}
+
+# ---- debloat page ---------------------------------------------------------------
+$script:DbBuilt = $false
+$script:DbCatalog = @()
+$script:DbRows = @{}
+$script:DbCtx = @{ Busy = $false; Seeded = $false }
+$script:DbButtons = @('btnDbScan', 'btnDbSafe', 'btnDbAll', 'btnDbNone', 'btnDbRun')
+
+function Update-DbCount {
+    $n = 0
+    foreach ($id in $script:DbRows.Keys) { $r = $script:DbRows[$id]; if ($r.Switch.IsChecked -and $r.Switch.IsEnabled) { $n++ } }
+    $script:UI.txtDbCount.Text = "$n selected"
+}
+
+function Build-DebloatPage {
+    $ui = $script:UI
+    $script:DbCatalog = @(Get-DebloatCatalog)
+    $ui.pnlDebloat.Children.Clear()
+    $script:DbRows = @{}
+    foreach ($cat in $script:DebloatCats.Keys) {
+        $h = New-Tb ($script:DebloatCats[$cat].ToUpper()) 10.5 'Dim' $true
+        $h.Margin = '2,14,0,8'
+        [void]$ui.pnlDebloat.Children.Add($h)
+        foreach ($d in @($script:DbCatalog | Where-Object { $_.Cat -eq $cat })) {
+            $card = New-Object Windows.Controls.Border
+            $card.Background = Get-Res 'Bg2'
+            $card.BorderThickness = '1'
+            $card.CornerRadius = New-Object Windows.CornerRadius -ArgumentList 10
+            $card.Padding = '14,9'
+            $card.Margin = '0,0,0,6'
+            Add-CardHover $card
+            $g = New-Object Windows.Controls.Grid
+            foreach ($w in 'Auto', '*', 'Auto') { $cd = New-Object Windows.Controls.ColumnDefinition; $cd.Width = $w; [void]$g.ColumnDefinitions.Add($cd) }
+            $sw = New-Object Windows.Controls.CheckBox
+            $sw.Style = Get-Res 'Switch'
+            $sw.Tag = $d.Id
+            $sw.VerticalAlignment = 'Center'
+            $sw.Margin = '0,0,14,0'
+            $sw.Add_Click({ Update-DbCount })
+            [void]$g.Children.Add($sw)
+            $mid = New-Object Windows.Controls.WrapPanel
+            $mid.VerticalAlignment = 'Center'
+            $nm = New-Tb $d.Name 13 'Text' $true
+            $nm.TextWrapping = 'NoWrap'; $nm.Margin = '0,0,10,0'; $nm.VerticalAlignment = 'Center'
+            [void]$mid.Children.Add($nm)
+            if ($d.Safe) { [void]$mid.Children.Add((New-Chip 'Safe to remove' 'Good' 'Bg1')) } else { [void]$mid.Children.Add((New-Chip 'Optional' 'Warn' 'Bg1')) }
+            [Windows.Controls.Grid]::SetColumn($mid, 1)
+            [void]$g.Children.Add($mid)
+            $st = New-Tb '' 11.5 'Dim' $true
+            $st.TextWrapping = 'NoWrap'; $st.VerticalAlignment = 'Center'; $st.Margin = '12,0,0,0'
+            [Windows.Controls.Grid]::SetColumn($st, 2)
+            [void]$g.Children.Add($st)
+            $card.Child = $g
+            [void]$ui.pnlDebloat.Children.Add($card)
+            $script:DbRows[$d.Id] = @{ Item = $d; Card = $card; Switch = $sw; Status = $st; Installed = $null }
+        }
+    }
+    $script:DbBuilt = $true
+    Update-DbCount
+}
+
+function Set-DbBusy {
+    param([bool]$Busy)
+    foreach ($b in $script:DbButtons) { $script:UI[$b].IsEnabled = -not $Busy }
+    $script:DbCtx.Busy = $Busy
+    Set-Spinner $Busy
+}
+
+function Start-DebloatScan {
+    $ui = $script:UI
+    if ($script:DbCtx.Busy) { return }
+    Set-DbBusy $true
+    $ui.txtDbStatus.Text = 'Scanning installed apps...'
+    Invoke-Async -Work $script:DebloatScan -OnDone {
+        param($res, $err)
+        $ui = $script:UI
+        Set-DbBusy $false
+        if ($err) { $ui.txtDbStatus.Text = "Scan failed: $err"; Write-Log "Debloat scan failed: $err" 'err'; return }
+        $names = @($res | ForEach-Object { $_ })
+        $found = 0
+        foreach ($id in $script:DbRows.Keys) {
+            $r = $script:DbRows[$id]; $d = $r.Item; $has = $false
+            if ($d.Special -eq 'onedrive') { $has = ($names -contains '__onedrive__') }
+            else { foreach ($pat in $d.Patterns) { if (@($names | Where-Object { $_ -like $pat }).Count -gt 0) { $has = $true; break } } }
+            $r.Installed = $has
+            if ($has) {
+                $found++
+                $r.Status.Text = 'Installed'; $r.Status.Foreground = Get-Res 'Good'
+                $r.Switch.IsEnabled = $true
+            } else {
+                $r.Status.Text = 'Not installed'; $r.Status.Foreground = Get-Res 'Dim'
+                $r.Switch.IsChecked = $false; $r.Switch.IsEnabled = $false
+            }
+        }
+        if (-not $script:DbCtx.Seeded) {
+            $script:DbCtx.Seeded = $true
+            foreach ($id in $script:DbRows.Keys) { $r = $script:DbRows[$id]; if ($r.Installed -and $r.Item.Safe) { $r.Switch.IsChecked = $true } }
+        }
+        $ui.txtDbStatus.Text = "$found removable app(s) found on this PC."
+        Update-DbCount
+        Write-Log "Debloat scan: $found removable app(s) installed." 'info'
+    }
+}
+
+function Select-DbRows {
+    param([string]$Mode)
+    foreach ($id in $script:DbRows.Keys) {
+        $r = $script:DbRows[$id]
+        if (-not $r.Switch.IsEnabled) { continue }
+        $r.Switch.IsChecked = switch ($Mode) { 'safe' { [bool]$r.Item.Safe } 'all' { $true } default { $false } }
+    }
+    Update-DbCount
+}
+
+function Start-DebloatRemove {
+    $ui = $script:UI
+    if ($script:DbCtx.Busy) { return }
+    $sel = @($script:DbRows.Values | Where-Object { $_.Switch.IsChecked -and $_.Switch.IsEnabled -and $_.Installed -ne $false })
+    if ($sel.Count -eq 0) { Write-Log 'Nothing selected to remove.' 'warn'; return }
+    $msg = "Remove $($sel.Count) item(s) from this PC?"
+    if (@($sel | Where-Object { $_.Item.Cat -eq 'xbox' }).Count -gt 0) { $msg += "`n`nYou ticked Xbox / Gaming Services items. Game Pass and some game launchers will stop working without them." }
+    $ans = [Windows.MessageBox]::Show($msg, 'Daqueece Optimizer', 'YesNo', 'Warning')
+    if ($ans -ne 'Yes') { return }
+    Set-DbBusy $true
+    try { Write-Log 'Creating a restore point...' 'info'; Invoke-UiPump; New-RestorePoint; Write-Log 'Restore point created.' 'ok' }
+    catch { Write-Log "No restore point made: $($_.Exception.Message)" 'warn' }
+    $items = @($sel | ForEach-Object { @{ Id = $_.Item.Id; Patterns = @($_.Item.Patterns); Special = $_.Item.Special } })
+    $script:DbCtx.Count = $items.Count; $script:DbCtx.Done = 0; $script:DbCtx.Removed = 0; $script:DbCtx.Failed = 0
+    $ui.barDb.Value = 0
+    $ui.txtDbStatus.Text = 'Removing apps. This can take a few minutes...'
+    Invoke-Async -Work $script:DebloatWork -ArgList @(, $items) -OnProgress {
+        param($it)
+        $ctx = $script:DbCtx
+        $r = $script:DbRows[$it.Id]
+        if ($it.Kind -eq 'start') { $r.Status.Text = 'Removing...'; $r.Status.Foreground = Get-Res 'Warn'; return }
+        $ctx.Done++
+        if ($it.Removed -gt 0) { $ctx.Removed++; $r.Status.Text = 'Removed'; $r.Status.Foreground = Get-Res 'Good'; $r.Installed = $false; Start-Pop $r.Status 0 0.7 300 }
+        elseif ($it.Err) { $ctx.Failed++; $r.Status.Text = 'Failed'; $r.Status.Foreground = Get-Res 'Bad'; $r.Status.ToolTip = [string]$it.Err }
+        else { $r.Status.Text = 'Not found'; $r.Status.Foreground = Get-Res 'Dim'; $r.Installed = $false }
+        $r.Switch.IsChecked = $false
+        if ($it.Removed -gt 0) { $r.Switch.IsEnabled = $false }
+        Set-BarAnimated $script:UI.barDb ([math]::Round(100 * $ctx.Done / [math]::Max(1, $ctx.Count)))
+        $script:UI.txtDbStatus.Text = "Removing apps... $($ctx.Done) of $($ctx.Count)"
+    } -OnDone {
+        param($res, $err)
+        $ctx = $script:DbCtx
+        Set-DbBusy $false
+        Update-DbCount
+        if ($err) { $script:UI.txtDbStatus.Text = "Failed: $err"; Write-Log "Debloat failed: $err" 'err'; return }
+        $script:UI.barDb.Value = 100
+        $script:UI.txtDbStatus.Text = "Done. Removed $($ctx.Removed) item(s), $($ctx.Failed) failed."
+        Write-Log "Debloat finished: $($ctx.Removed) removed, $($ctx.Failed) failed." $(if ($ctx.Failed -gt 0) { 'warn' } else { 'ok' })
+    }
+}
+
+# ---- startup page ---------------------------------------------------------------
+$script:StItems = @()
+
+function Build-StartupPage {
+    $ui = $script:UI
+    $ui.pnlStartup.Children.Clear()
+    $script:StItems = @(Get-StartupItems)
+    if ($script:StItems.Count -eq 0) {
+        [void]$ui.pnlStartup.Children.Add((New-Tb 'No startup programs found. Nothing is launching at sign-in from the usual places.' 12.5 'Muted'))
+        return
+    }
+    $i = 0
+    foreach ($it in $script:StItems) {
+        $card = New-Object Windows.Controls.Border
+        $card.Background = Get-Res 'Bg2'
+        $card.BorderThickness = '1'
+        $card.CornerRadius = New-Object Windows.CornerRadius -ArgumentList 10
+        $card.Padding = '14,10'
+        $card.Margin = '0,0,0,6'
+        Add-CardHover $card
+        $g = New-Object Windows.Controls.Grid
+        foreach ($w in 'Auto', '*') { $cd = New-Object Windows.Controls.ColumnDefinition; $cd.Width = $w; [void]$g.ColumnDefinitions.Add($cd) }
+        $sw = New-Object Windows.Controls.CheckBox
+        $sw.Style = Get-Res 'Switch'
+        $sw.Tag = $i
+        $sw.IsChecked = [bool]$it.Enabled
+        $sw.VerticalAlignment = 'Center'
+        $sw.Margin = '0,0,14,0'
+        $sw.Add_Click({ param($s, $e) Invoke-Safe { Set-StartupItem ([int]$s.Tag) ([bool]$s.IsChecked) } 'Startup toggle' })
+        [void]$g.Children.Add($sw)
+        $mid = New-Object Windows.Controls.StackPanel
+        $head = New-Object Windows.Controls.WrapPanel
+        $nm = New-Tb $it.Name 13 'Text' $true
+        $nm.TextWrapping = 'NoWrap'; $nm.Margin = '0,0,10,0'; $nm.VerticalAlignment = 'Center'
+        [void]$head.Children.Add($nm)
+        [void]$head.Children.Add((New-Chip $it.Scope 'Dim' 'Bg1'))
+        if (("$($it.Name) $($it.Command)") -match $script:StartupKeep) { [void]$head.Children.Add((New-Chip 'Likely needed' 'Warn' 'Bg1')) }
+        [void]$mid.Children.Add($head)
+        $cmd = New-Tb $it.Command 11 'Dim'
+        $cmd.FontFamily = 'Consolas'; $cmd.TextTrimming = 'CharacterEllipsis'; $cmd.TextWrapping = 'NoWrap'; $cmd.Margin = '0,3,0,0'
+        $cmd.ToolTip = $it.Command
+        [void]$mid.Children.Add($cmd)
+        [Windows.Controls.Grid]::SetColumn($mid, 1)
+        [void]$g.Children.Add($mid)
+        $card.Child = $g
+        [void]$ui.pnlStartup.Children.Add($card)
+        $i++
+    }
+}
+
+function Set-StartupItem {
+    param([int]$Index, [bool]$On)
+    $it = $script:StItems[$Index]
+    Set-StartupEnabled $it.Key $it.Name $On
+    $it.Enabled = $On
+    Write-Log ("Startup: {0} {1}." -f $it.Name, $(if ($On) { 'will launch at sign-in' } else { 'will no longer launch at sign-in' })) $(if ($On) { 'info' } else { 'accent' })
+}
 # ---- UI helpers ---------------------------------------------------------------
 function Get-Res { param([string]$Key) return $script:UI.Win.FindResource($Key) }
 
@@ -1922,6 +2844,7 @@ function Set-Busy {
     param([bool]$Busy, [string[]]$Buttons)
     foreach ($n in $Buttons) { $script:UI[$n].IsEnabled = -not $Busy }
     $script:UI.Win.Cursor = if ($Busy) { [Windows.Input.Cursors]::Wait } else { $null }
+    Set-Spinner $Busy
 }
 
 # ---- pages --------------------------------------------------------------------
@@ -1930,13 +2853,38 @@ $script:PageMeta = [ordered]@{
     opt     = @{ Title = 'Optimize';      Sub = 'Toggle what you want, then apply. Everything is journaled and reversible.' }
     rust    = @{ Title = 'Rust';          Sub = 'Launch options and graphics config tuned for RustClient.' }
     session = @{ Title = 'Game session';  Sub = 'Boosts that run only while you play, then undo themselves.' }
+    debloat = @{ Title = 'Debloat';       Sub = 'Remove preinstalled apps and promos for every user on this PC.' }
+    startup = @{ Title = 'Startup';       Sub = 'Control which programs launch at sign-in.' }
     clean   = @{ Title = 'Cleaner';       Sub = 'Free disk space. Nothing is deleted until you confirm.' }
     log     = @{ Title = 'Activity log';  Sub = 'Everything this app has done on this PC.' }
 }
-$script:PageCtl = @{ dash = 'pgDash'; opt = 'pgOpt'; rust = 'pgRust'; session = 'pgSession'; clean = 'pgClean'; log = 'pgLog' }
+$script:PageCtl = @{ dash = 'pgDash'; opt = 'pgOpt'; debloat = 'pgDebloat'; startup = 'pgStartup'; rust = 'pgRust'; session = 'pgSession'; clean = 'pgClean'; log = 'pgLog' }
+
+function Start-PageIn {
+    param([string]$Key)
+    $ui = $script:UI
+    $el = $ui[$script:PageCtl[$Key]]
+    Start-FadeSlide $el 0 12 0 260
+    Start-FadeSlide $ui.pageTitle 0 8 0 300
+    Start-FadeSlide $ui.pageSub 70 6 0 300
+    switch ($Key) {
+        'dash' {
+            $i = 0
+            foreach ($n in 'dCard1', 'dCard2', 'dCard3') { Start-FadeSlide $ui[$n] (60 + $i * 90) 18 0 420; $i++ }
+            Start-Stagger $ui.pnlFindings 10 45 300 12
+            Update-DashStats -Animate
+        }
+        'opt'     { Start-Stagger $ui.pnlTweaks 14 28 40 10 }
+        'debloat' { Start-Stagger $ui.pnlDebloat 14 28 40 10 }
+        'startup' { Start-Stagger $ui.pnlStartup 12 30 40 10 }
+        'clean'   { Start-Stagger $ui.pnlClean 10 34 40 10 }
+        'rust'    { Start-Stagger $ui.pgRust.Content 3 90 40 14 }
+        'session' { Start-Stagger $ui.pgSession.Content 2 100 40 14 }
+    }
+}
 
 function Show-Page {
-    param([string]$Key)
+    param([string]$Key, [switch]$NoAnim)
     $ui = $script:UI
     foreach ($k in $script:PageCtl.Keys) { $ui[$script:PageCtl[$k]].Visibility = 'Collapsed' }
     $ui[$script:PageCtl[$Key]].Visibility = 'Visible'
@@ -1945,10 +2893,13 @@ function Show-Page {
     switch ($Key) {
         'dash'    { Update-Dashboard -KeepFindings }
         'opt'     { Update-AllCards }
+        'debloat' { if (-not $script:DbBuilt) { Build-DebloatPage; Start-DebloatScan } }
+        'startup' { Build-StartupPage }
         'rust'    { Update-Launch }
         'session' { Update-SessionUi }
         'clean'   { if (-not $script:CleanBuilt) { Build-CleanPage } }
     }
+    if (-not $NoAnim) { Start-PageIn $Key }
 }
 
 # ---- dashboard ----------------------------------------------------------------
@@ -1956,6 +2907,7 @@ function Update-Side {
     $ui = $script:UI
     if ($script:Session.Active) {
         $ui.sideDot.Fill = Get-Res 'Good'
+        Start-Forever $ui.sideDot ([Windows.UIElement]::OpacityProperty) 1 0.3 0.9 $true
         $ui.sideTitle.Text = 'Session active'
         $bits = @()
         if ($script:Session.Timer) { $bits += 'timer held' }
@@ -1965,6 +2917,8 @@ function Update-Side {
         $ui.sideSub.Text = ($bits -join ', ')
     } else {
         $ui.sideDot.Fill = Get-Res 'Dim'
+        Stop-Anim $ui.sideDot ([Windows.UIElement]::OpacityProperty)
+        $ui.sideDot.Opacity = 1
         $ui.sideTitle.Text = 'No active session'
         $n = $script:Journal.Count
         $ui.sideSub.Text = if ($n -gt 0) { "$n tweak(s) applied by this app" } else { 'No tweaks applied yet' }
@@ -1972,6 +2926,7 @@ function Update-Side {
 }
 
 function Update-DashStats {
+    param([switch]$Animate)
     $ui = $script:UI
     $total = 0; $done = 0
     foreach ($id in $script:Cards.Keys) {
@@ -1983,9 +2938,15 @@ function Update-DashStats {
         $total++
         if ($c.Applied) { $done++ }
     }
-    $ui.dApplied.Text = "$done"
+    $pct = if ($total -gt 0) { [math]::Round(100 * $done / $total) } else { 0 }
     $ui.dTotal.Text = "/ $total"
-    $ui.dBar.Value = if ($total -gt 0) { [math]::Round(100 * $done / $total) } else { 0 }
+    $ui.dApplied.Text = "$done"
+    if ($Animate -and $script:AnimOn) {
+        $ui.dApplied.Text = '0'
+        $ui.countProxy.BeginAnimation([Windows.Controls.Primitives.RangeBase]::ValueProperty, (New-DAnim 0 $done 750 180 (New-Ease 'Cubic' 'EaseOut')))
+        $ui.dBar.Value = 0
+        Set-BarAnimated $ui.dBar $pct
+    } else { $ui.dBar.Value = $pct }
     $ui.dAppliedNote.Text = if ($done -ge $total -and $total -gt 0) { 'Everything recommended for this PC is applied.' } else { "$($total - $done) recommended tweak(s) available for this PC." }
 }
 
@@ -2052,6 +3013,7 @@ function New-TweakCard {
     $card.CornerRadius = New-Object Windows.CornerRadius 10
     $card.Padding = '14,12'
     $card.Margin = '0,0,0,8'
+    Add-CardHover $card
 
     $g = New-Object Windows.Controls.Grid
     foreach ($w in 'Auto', '*', 'Auto') { $cd = New-Object Windows.Controls.ColumnDefinition; $cd.Width = $w; [void]$g.ColumnDefinitions.Add($cd) }
@@ -2061,8 +3023,8 @@ function New-TweakCard {
     $sw.Tag = $T.Id
     $sw.VerticalAlignment = 'Top'
     $sw.Margin = '0,2,16,0'
-    $sw.Add_Checked({ param($s, $e) [void]$script:Sel.Add([string]$s.Tag) })
-    $sw.Add_Unchecked({ param($s, $e) [void]$script:Sel.Remove([string]$s.Tag) })
+    $sw.Add_Checked({ param($s, $e) [void]$script:Sel.Add([string]$s.Tag); Update-ApplyGlow })
+    $sw.Add_Unchecked({ param($s, $e) [void]$script:Sel.Remove([string]$s.Tag); Update-ApplyGlow })
     $sw.IsChecked = $script:Sel.Contains($T.Id)
     [void]$g.Children.Add($sw)
 
@@ -2127,7 +3089,10 @@ function Update-Card {
     if ($c.Blocked) { $c.PillText.Text = 'Unavailable'; $c.Pill.Background = Get-Res 'Bg1'; $c.PillText.Foreground = Get-Res 'Dim'; return }
     $on = $false
     try { $on = Test-TweakApplied $c.Tweak } catch { }
+    $changed = ($c.Seen -and ($c.Applied -ne $on))
     $c.Applied = $on
+    $c.Seen = $true
+    if ($changed) { Start-Pop $c.Pill 0 0.6 360 }
     if ($on) { $c.PillText.Text = 'Applied'; $c.Pill.Background = [Windows.Media.Brushes]::Transparent; $c.PillText.Foreground = Get-Res 'Good'; $c.Pill.BorderBrush = Get-Res 'Good'; $c.Pill.BorderThickness = '1' }
     else     { $c.PillText.Text = 'Off'; $c.Pill.Background = Get-Res 'Bg1'; $c.PillText.Foreground = Get-Res 'Dim'; $c.Pill.BorderThickness = '0' }
 }
@@ -2196,6 +3161,7 @@ function Invoke-OptRun {
         if ($reboot.Count -gt 0) {
             $ui.bannerRebootText.Text = 'Restart Windows to finish: ' + ($reboot -join ', ') + '.'
             $ui.bannerReboot.Visibility = 'Visible'
+            Start-FadeSlide $ui.bannerReboot 0 -12 0 320
         }
         Write-Log ("{0} done: {1} succeeded, {2} failed." -f $(if ($Apply) { 'Apply' } else { 'Revert' }), $ok, $fail) $(if ($fail -gt 0) { 'warn' } else { 'ok' })
     } finally {
@@ -2317,7 +3283,7 @@ function Build-CleanPage {
         $card = New-Object Windows.Controls.Border
         $card.Background = Get-Res 'Bg2'; $card.BorderBrush = Get-Res 'Line'; $card.BorderThickness = '1'
         $card.CornerRadius = New-Object Windows.CornerRadius 10
-        $card.Padding = '14,10'; $card.Margin = '0,0,0,8'
+        $card.Padding = '14,10'; $card.Margin = '0,0,0,8'; Add-CardHover $card
         $g = New-Object Windows.Controls.Grid
         $c0 = New-Object Windows.Controls.ColumnDefinition; $c0.Width = '*'
         $c1 = New-Object Windows.Controls.ColumnDefinition; $c1.Width = 'Auto'
@@ -2354,6 +3320,7 @@ function Start-CleanJob {
     $script:CleanCtx = @{ Busy = $true; Done = 0; Count = $tasks.Count; Delete = $Delete; Freed = 0.0 }
     foreach ($b in 'btnScan', 'btnCleanRun', 'btnCleanRec', 'btnCleanNone') { $ui[$b].IsEnabled = $false }
     $ui.barClean.Value = 0
+    Set-Spinner $true
     $ui.txtCleanTotal.Text = ''
     $ui.txtCleanStatus.Text = if ($Delete) { 'Cleaning...' } else { 'Scanning...' }
     Invoke-Async -Work $script:CleanWork -ArgList @($tasks, $Delete) -OnProgress {
@@ -2375,6 +3342,7 @@ function Start-CleanJob {
         $ctx.Busy = $false
         foreach ($b in 'btnScan', 'btnCleanRun', 'btnCleanRec', 'btnCleanNone') { $ui[$b].IsEnabled = $true }
         $ui.barClean.Value = 100
+        Set-Spinner $false
         if ($err) { $ui.txtCleanStatus.Text = "Failed: $err"; Write-Log "Cleaner failed: $err" 'err'; return }
         if ($ctx.Delete) {
             $ui.txtCleanStatus.Text = 'Cleanup finished.'
@@ -2402,6 +3370,17 @@ function New-AppWindow {
     return $win
 }
 
+function Start-AppEntrance {
+    $ui = $script:UI
+    Start-FadeSlide $ui.app 0 0 20 420
+    $i = 0
+    foreach ($n in @($ui.navPanel.Children)) { Start-FadeSlide $n (140 + $i * 55) 0 -18 380; $i++ }
+    Start-Pop $ui.sideLogo 120 0.5 450
+    Start-FadeSlide $ui.swMotion 520 0 0 320
+    Set-Ambient
+    Start-PageIn 'dash'
+}
+
 function Enter-App {
     $ui = $script:UI
     $ui.btnEnter.IsEnabled = $false
@@ -2413,30 +3392,100 @@ function Enter-App {
         Build-CleanPage
         Update-Dashboard
     } catch { Write-Log "Startup scan hit a problem: $($_.Exception.Message)" 'warn' }
-    Show-Page 'dash'
-    $fade = New-Object Windows.Media.Animation.DoubleAnimation(1, 0, [TimeSpan]::FromMilliseconds(260))
+    Show-Page 'dash' -NoAnim
+    if (-not $script:AnimOn) {
+        Stop-Particles
+        $ui.landing.Visibility = 'Collapsed'; $ui.app.Visibility = 'Visible'; $ui.app.Opacity = 1
+        Start-PageIn 'dash'
+        return
+    }
+    $ui.hero.RenderTransformOrigin = New-Object Windows.Point -ArgumentList 0.5, 0.5
+    $zoom = New-Object Windows.Media.ScaleTransform
+    $ui.hero.RenderTransform = $zoom
+    $zoom.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, (New-DAnim 1 1.06 300 0 (New-Ease 'Quad' 'EaseIn')))
+    $zoom.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty, (New-DAnim 1 1.06 300 0 (New-Ease 'Quad' 'EaseIn')))
+    $fade = New-DAnim 1 0 300 0 (New-Ease 'Quad' 'EaseIn')
     $fade.Add_Completed({
+        Stop-Particles
         $script:UI.landing.Visibility = 'Collapsed'
         $script:UI.app.Visibility = 'Visible'
-        $in = New-Object Windows.Media.Animation.DoubleAnimation(0, 1, [TimeSpan]::FromMilliseconds(380))
-        $script:UI.app.BeginAnimation([Windows.UIElement]::OpacityProperty, $in)
+        Start-AppEntrance
     })
     $ui.landing.BeginAnimation([Windows.UIElement]::OpacityProperty, $fade)
 }
 
 function Start-LandingAnimations {
     $ui = $script:UI
-    $ease = New-Object Windows.Media.Animation.QuadraticEase
-    $ease.EasingMode = 'EaseOut'
-    $a1 = New-Object Windows.Media.Animation.DoubleAnimation(0, 1, [TimeSpan]::FromMilliseconds(900)); $a1.EasingFunction = $ease
-    $ui.hero.BeginAnimation([Windows.UIElement]::OpacityProperty, $a1)
-    $a2 = New-Object Windows.Media.Animation.DoubleAnimation(18, 0, [TimeSpan]::FromMilliseconds(900)); $a2.EasingFunction = $ease
-    $ui.heroShift.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, $a2)
-    $a3 = New-Object Windows.Media.Animation.DoubleAnimation(0.35, 0.95, [TimeSpan]::FromSeconds(3.6))
-    $a3.AutoReverse = $true
-    $a3.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
-    $sine = New-Object Windows.Media.Animation.SineEase; $sine.EasingMode = 'EaseInOut'; $a3.EasingFunction = $sine
-    $ui.glow.BeginAnimation([Windows.UIElement]::OpacityProperty, $a3)
+    $letters = @($ui.lnTitle.Children)
+    if (-not $script:AnimOn) {
+        $ui.Win.Opacity = 1
+        $ui.logoScale.ScaleX = 1; $ui.logoScale.ScaleY = 1
+        foreach ($el in @($ui.logoWrap, $ui.lnTag, $ui.lnSub, $ui.lnLine, $ui.btnEnter, $ui.chipA, $ui.chipB, $ui.chipC, $ui.lnSys, $ui.lnChrome) + $letters) { Start-FadeSlide $el 0 0 0 1 }
+        return
+    }
+    $op = [Windows.UIElement]::OpacityProperty
+    $out = New-Ease 'Quad' 'EaseOut'
+    # window open: fade + settle
+    $ui.Win.BeginAnimation($op, (New-DAnim 0 1 450 0 $out))
+    $ui.frame.RenderTransformOrigin = New-Object Windows.Point -ArgumentList 0.5, 0.5
+    $fs = New-Object Windows.Media.ScaleTransform
+    $fs.ScaleX = 0.965; $fs.ScaleY = 0.965
+    $ui.frame.RenderTransform = $fs
+    $fs.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, (New-DAnim 0.965 1 560 0 (New-Ease 'Cubic' 'EaseOut')))
+    $fs.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty, (New-DAnim 0.965 1 560 0 (New-Ease 'Cubic' 'EaseOut')))
+    # background gradient drifts slowly
+    foreach ($prop in @([Windows.Media.RadialGradientBrush]::CenterProperty, [Windows.Media.RadialGradientBrush]::GradientOriginProperty)) {
+        $pa = New-Object Windows.Media.Animation.PointAnimation
+        $pa.From = New-Object Windows.Point -ArgumentList 0.44, 0.42
+        $pa.To = New-Object Windows.Point -ArgumentList 0.56, 0.5
+        $pa.Duration = Get-Dur 7000; $pa.AutoReverse = $true
+        $pa.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+        $pa.EasingFunction = New-Ease 'Sine' 'EaseInOut'
+        $ui.bgGrad.BeginAnimation($prop, $pa)
+    }
+    # glow breathes and swells
+    Start-Forever $ui.glow $op 0.35 0.95 3.6 $true
+    Start-Forever $ui.glowScale ([Windows.Media.ScaleTransform]::ScaleXProperty) 0.92 1.08 5.0 $true
+    Start-Forever $ui.glowScale ([Windows.Media.ScaleTransform]::ScaleYProperty) 0.92 1.08 5.0 $true
+    # logo mark: pop in, ring spins, glow pulses
+    Start-FadeSlide $ui.logoWrap 150 0 0 600
+    $ui.logoScale.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, (New-DAnim 0.5 1 760 150 (New-Ease 'Back' 'EaseOut')))
+    $ui.logoScale.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty, (New-DAnim 0.5 1 760 150 (New-Ease 'Back' 'EaseOut')))
+    Start-Forever $ui.ringRot ([Windows.Media.RotateTransform]::AngleProperty) 0 360 20 $false
+    Start-Forever $ui.logoFx ([Windows.Media.Effects.DropShadowEffect]::BlurRadiusProperty) 16 42 2.4 $true
+    # text cascade
+    Start-FadeSlide $ui.lnTag 480 10 0 520
+    $i = 0
+    foreach ($l in $letters) { Start-FadeSlide $l (640 + $i * 70) 24 0 560; $i++ }
+    Start-FadeSlide $ui.lnSub 1300 12 0 520
+    Start-FadeSlide $ui.lnLine 1500 10 0 560
+    # enter button: fade, pop, then a light sweep across it
+    Start-FadeSlide $ui.btnEnter 1750 0 0 500
+    Start-Pop $ui.btnEnter 1750 0.86 560
+    try {
+        $ui.btnEnter.ApplyTemplate()
+        $hl = $ui.btnEnter.Template.FindName('hlStop', $ui.btnEnter)
+        if ($hl) {
+            $ka = New-Object Windows.Media.Animation.DoubleAnimationUsingKeyFrames
+            $ka.Duration = Get-Dur 3600
+            $ka.BeginTime = Get-Span 2600
+            $ka.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+            foreach ($kf in @(@(0, 0), @(1, 1300), @(1, 3600))) {
+                $f = New-Object Windows.Media.Animation.LinearDoubleKeyFrame
+                $f.Value = [double]$kf[0]
+                $f.KeyTime = [Windows.Media.Animation.KeyTime]::FromTimeSpan((Get-Span $kf[1]))
+                [void]$ka.KeyFrames.Add($f)
+            }
+            $hl.BeginAnimation([Windows.Media.GradientStop]::OffsetProperty, $ka)
+        }
+    } catch { }
+    # chips, footer, window buttons
+    Start-FadeSlide $ui.chipA 2000 12 0 420
+    Start-FadeSlide $ui.chipB 2100 12 0 420
+    Start-FadeSlide $ui.chipC 2200 12 0 420
+    Start-FadeSlide $ui.lnSys 2500 0 0 600
+    Start-FadeSlide $ui.lnChrome 600 0 0 500
+    Start-Particles
 }
 
 function Register-Events {
@@ -2445,7 +3494,17 @@ function Register-Events {
 
     # landing text
     $ui.lnTag.Text   = Space-Text 'WINDOWS TUNING FOR RUST'
-    $ui.lnTitle.Text = Space-Text 'DAQUEECE'
+    foreach ($ch in 'DAQUEECE'.ToCharArray()) {
+        $tb = New-Object Windows.Controls.TextBlock
+        $tb.Text = [string]$ch
+        $tb.FontFamily = 'Bahnschrift, Segoe UI Semibold'
+        $tb.FontSize = 64
+        $tb.FontWeight = 'SemiBold'
+        $tb.Foreground = Get-Res 'Text'
+        $tb.Margin = '0,0,5,0'
+        $tb.Opacity = 0
+        [void]$ui.lnTitle.Children.Add($tb)
+    }
     $ui.lnSub.Text   = Space-Text 'OPTIMIZER'
     $ui.btnEnter.Content = ('ENTER OPTIMIZER   ' + [char]0x2192)
     $dot = [string][char]0x00B7
@@ -2462,7 +3521,7 @@ function Register-Events {
     $ui.btnEnter.Add_Click({ Invoke-Safe { Enter-App } 'Enter' })
 
     # navigation
-    $navs = @{ navDash = 'dash'; navOpt = 'opt'; navRust = 'rust'; navSession = 'session'; navClean = 'clean'; navLog = 'log' }
+    $navs = @{ navDash = 'dash'; navOpt = 'opt'; navDebloat = 'debloat'; navStartup = 'startup'; navRust = 'rust'; navSession = 'session'; navClean = 'clean'; navLog = 'log' }
     foreach ($n in $navs.Keys) {
         $ui[$n].Tag = $navs[$n]
         $ui[$n].Add_Checked({ param($s, $e) Invoke-Safe { Show-Page ([string]$s.Tag) } 'Navigation' })
@@ -2526,7 +3585,26 @@ function Register-Events {
     $ui.btnLogFile.Add_Click({ try { Start-Process notepad.exe -ArgumentList "`"$($script:LogFile)`"" } catch { } })
     $ui.btnLogClear.Add_Click({ $script:UI.logList.Items.Clear() })
 
+    # animations switch and count-up proxy
+    $ui.countProxy.Add_ValueChanged({ $script:UI.dApplied.Text = [string][int][math]::Round($script:UI.countProxy.Value) })
+    $ui.swMotion.Add_Click({
+        $script:AnimOn = [bool]$script:UI.swMotion.IsChecked
+        Set-Ambient; Update-ApplyGlow; Update-Side
+        Write-Log ("Animations {0}." -f $(if ($script:AnimOn) { 'on' } else { 'off' })) 'info'
+    })
+
+    # debloat
+    $ui.btnDbScan.Add_Click({ Invoke-Safe { Start-DebloatScan } 'Debloat scan' })
+    $ui.btnDbSafe.Add_Click({ Select-DbRows 'safe' })
+    $ui.btnDbAll.Add_Click({ Select-DbRows 'all' })
+    $ui.btnDbNone.Add_Click({ Select-DbRows 'none' })
+    $ui.btnDbRun.Add_Click({ Invoke-Safe { Start-DebloatRemove } 'Debloat' })
+
+    # startup
+    $ui.btnStRefresh.Add_Click({ Invoke-Safe { Build-StartupPage; Start-Stagger $script:UI.pnlStartup 12 30 0 10 } 'Startup refresh' })
+
     # lifecycle
+    $win.Opacity = 0
     $win.Add_Loaded({ Start-LandingAnimations })
     $win.Add_Closing({
         try { $script:SessionTimer.Stop() } catch { }
