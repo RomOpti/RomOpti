@@ -168,7 +168,7 @@ function Write-Log {
     param([string]$Message, [string]$Kind = 'info')
     try { Add-Content -LiteralPath $script:LogFile -Value ("{0} [{1}] {2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Kind, $Message) -ErrorAction SilentlyContinue } catch { }
     if (-not $script:UI -or -not $script:UI.logList) { return }
-    $color = switch ($Kind) { 'ok' { '#3FB950' } 'warn' { '#D9A23A' } 'err' { '#E5534B' } 'accent' { '#E8743B' } default { '#8D96A3' } }
+    $color = switch ($Kind) { 'ok' { '#2ED3A0' } 'warn' { '#FFB547' } 'err' { '#FF5C7A' } 'accent' { '#7C5CFF' } default { '#98A2C3' } }
     $tb = New-Object Windows.Controls.TextBlock
     $tb.Text = ("{0}  {1}" -f (Get-Date -Format 'HH:mm:ss'), $Message)
     $tb.TextWrapping = 'Wrap'
@@ -2069,19 +2069,19 @@ $script:Xaml = @'
         Background="Transparent" ResizeMode="CanMinimize" FontFamily="Segoe UI"
         UseLayoutRounding="True" SnapsToDevicePixels="True">
   <Window.Resources>
-    <SolidColorBrush x:Key="Bg0" Color="#0A0C0F"/>
-    <SolidColorBrush x:Key="Bg1" Color="#0F1217"/>
-    <SolidColorBrush x:Key="Bg2" Color="#151920"/>
-    <SolidColorBrush x:Key="Bg3" Color="#1B2028"/>
-    <SolidColorBrush x:Key="Line" Color="#232933"/>
-    <SolidColorBrush x:Key="Text" Color="#E8EBEF"/>
-    <SolidColorBrush x:Key="Muted" Color="#8D96A3"/>
-    <SolidColorBrush x:Key="Dim" Color="#5C6573"/>
-    <SolidColorBrush x:Key="Accent" Color="#E8743B"/>
-    <SolidColorBrush x:Key="AccentHi" Color="#F58A55"/>
-    <SolidColorBrush x:Key="Good" Color="#3FB950"/>
-    <SolidColorBrush x:Key="Warn" Color="#D9A23A"/>
-    <SolidColorBrush x:Key="Bad" Color="#E5534B"/>
+    <SolidColorBrush x:Key="Bg0" Color="#070914"/>
+    <SolidColorBrush x:Key="Bg1" Color="#0C0F1F"/>
+    <SolidColorBrush x:Key="Bg2" Color="#121629"/>
+    <SolidColorBrush x:Key="Bg3" Color="#191E36"/>
+    <SolidColorBrush x:Key="Line" Color="#242A47"/>
+    <SolidColorBrush x:Key="Text" Color="#ECEFFA"/>
+    <SolidColorBrush x:Key="Muted" Color="#98A2C3"/>
+    <SolidColorBrush x:Key="Dim" Color="#5F6A8E"/>
+    <SolidColorBrush x:Key="Accent" Color="#7C5CFF"/>
+    <SolidColorBrush x:Key="AccentHi" Color="#A28BFF"/>
+    <SolidColorBrush x:Key="Good" Color="#2ED3A0"/>
+    <SolidColorBrush x:Key="Warn" Color="#FFB547"/>
+    <SolidColorBrush x:Key="Bad" Color="#FF5C7A"/>
 
     <!-- sidebar navigation -->
     <Style x:Key="Nav" TargetType="RadioButton">
@@ -2157,13 +2157,13 @@ $script:Xaml = @'
     <Style x:Key="BtnPrimary" TargetType="Button" BasedOn="{StaticResource Btn}">
       <Setter Property="Background" Value="{StaticResource Accent}"/>
       <Setter Property="BorderBrush" Value="{StaticResource Accent}"/>
-      <Setter Property="Foreground" Value="#14100D"/>
+      <Setter Property="Foreground" Value="#0C0A1A"/>
       <Setter Property="FontWeight" Value="Bold"/>
     </Style>
     <Style x:Key="BtnDanger" TargetType="Button" BasedOn="{StaticResource Btn}">
       <Setter Property="Foreground" Value="{StaticResource Bad}"/>
       <Setter Property="Background" Value="Transparent"/>
-      <Setter Property="BorderBrush" Value="#4A2A2B"/>
+      <Setter Property="BorderBrush" Value="#4A2338"/>
     </Style>
     <Style x:Key="Chrome" TargetType="Button">
       <Setter Property="Width" Value="38"/><Setter Property="Height" Value="30"/>
@@ -2191,7 +2191,7 @@ $script:Xaml = @'
 
     <!-- the big landing-page button -->
     <Style x:Key="Enter" TargetType="Button">
-      <Setter Property="Foreground" Value="#160E09"/>
+      <Setter Property="Foreground" Value="#0D0A1F"/>
       <Setter Property="FontSize" Value="14"/>
       <Setter Property="FontWeight" Value="Bold"/>
       <Setter Property="Cursor" Value="Hand"/>
@@ -2201,19 +2201,19 @@ $script:Xaml = @'
             <Border x:Name="bd" CornerRadius="30" Padding="46,17" RenderTransformOrigin="0.5,0.5">
               <Border.Background>
                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                  <GradientStop Color="#F58A55" Offset="0"/>
-                  <GradientStop x:Name="hlStop" Color="#FFC6A0" Offset="0"/>
-                  <GradientStop Color="#E0612B" Offset="1"/>
+                  <GradientStop Color="#A28BFF" Offset="0"/>
+                  <GradientStop x:Name="hlStop" Color="#DCD3FF" Offset="0"/>
+                  <GradientStop Color="#5B3FE0" Offset="1"/>
                 </LinearGradientBrush>
               </Border.Background>
-              <Border.Effect><DropShadowEffect Color="#E8743B" BlurRadius="30" Opacity="0.42" ShadowDepth="0"/></Border.Effect>
+              <Border.Effect><DropShadowEffect Color="#7C5CFF" BlurRadius="30" Opacity="0.42" ShadowDepth="0"/></Border.Effect>
               <Border.RenderTransform><ScaleTransform ScaleX="1" ScaleY="1"/></Border.RenderTransform>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
                 <Setter TargetName="bd" Property="Effect">
-                  <Setter.Value><DropShadowEffect Color="#F58A55" BlurRadius="46" Opacity="0.7" ShadowDepth="0"/></Setter.Value>
+                  <Setter.Value><DropShadowEffect Color="#A28BFF" BlurRadius="46" Opacity="0.7" ShadowDepth="0"/></Setter.Value>
                 </Setter>
                 <Setter TargetName="bd" Property="RenderTransform">
                   <Setter.Value><ScaleTransform ScaleX="1.035" ScaleY="1.035"/></Setter.Value>
@@ -2241,8 +2241,8 @@ $script:Xaml = @'
           <ControlTemplate TargetType="CheckBox">
             <StackPanel Orientation="Horizontal" Background="Transparent">
               <Border x:Name="track" Width="38" Height="21" CornerRadius="10.5" VerticalAlignment="Center">
-                <Border.Background><SolidColorBrush Color="#2B323D"/></Border.Background>
-                <Ellipse x:Name="knob" Width="15" Height="15" Fill="#C9D0DA" HorizontalAlignment="Left" Margin="3,0,0,0"/>
+                <Border.Background><SolidColorBrush Color="#2C3354"/></Border.Background>
+                <Ellipse x:Name="knob" Width="15" Height="15" Fill="#CBD3EE" HorizontalAlignment="Left" Margin="3,0,0,0"/>
               </Border>
               <ContentPresenter Margin="10,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
@@ -2251,11 +2251,11 @@ $script:Xaml = @'
                 <Setter TargetName="knob" Property="Fill" Value="#FFFFFF"/>
                 <Trigger.EnterActions><BeginStoryboard><Storyboard>
                   <ThicknessAnimation Storyboard.TargetName="knob" Storyboard.TargetProperty="Margin" To="20,0,0,0" Duration="0:0:0.18"><ThicknessAnimation.EasingFunction><BackEase EasingMode="EaseOut" Amplitude="0.35"/></ThicknessAnimation.EasingFunction></ThicknessAnimation>
-                  <ColorAnimation Storyboard.TargetName="track" Storyboard.TargetProperty="Background.Color" To="#E8743B" Duration="0:0:0.18"/>
+                  <ColorAnimation Storyboard.TargetName="track" Storyboard.TargetProperty="Background.Color" To="#7C5CFF" Duration="0:0:0.18"/>
                 </Storyboard></BeginStoryboard></Trigger.EnterActions>
                 <Trigger.ExitActions><BeginStoryboard><Storyboard>
                   <ThicknessAnimation Storyboard.TargetName="knob" Storyboard.TargetProperty="Margin" To="3,0,0,0" Duration="0:0:0.16"/>
-                  <ColorAnimation Storyboard.TargetName="track" Storyboard.TargetProperty="Background.Color" To="#2B323D" Duration="0:0:0.16"/>
+                  <ColorAnimation Storyboard.TargetName="track" Storyboard.TargetProperty="Background.Color" To="#2C3354" Duration="0:0:0.16"/>
                 </Storyboard></BeginStoryboard></Trigger.ExitActions>
               </Trigger>
               <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
@@ -2273,8 +2273,8 @@ $script:Xaml = @'
         <Setter.Value>
           <ControlTemplate TargetType="CheckBox">
             <StackPanel Orientation="Horizontal" Background="Transparent">
-              <Border x:Name="box" Width="18" Height="18" CornerRadius="5" BorderThickness="1.5" BorderBrush="#3A4250" Background="#10141A" VerticalAlignment="Center">
-                <Path x:Name="tick" Data="M 4,9.5 L 7.5,13 L 14,5" Stroke="#14100D" StrokeThickness="2.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
+              <Border x:Name="box" Width="18" Height="18" CornerRadius="5" BorderThickness="1.5" BorderBrush="#394167" Background="#0E1224" VerticalAlignment="Center">
+                <Path x:Name="tick" Data="M 4,9.5 L 7.5,13 L 14,5" Stroke="#0C0A1A" StrokeThickness="2.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
               </Border>
               <ContentPresenter Margin="10,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
@@ -2309,7 +2309,7 @@ $script:Xaml = @'
               <Trigger Property="IsChecked" Value="True">
                 <Setter TargetName="bd" Property="Background" Value="{StaticResource Accent}"/>
                 <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource Accent}"/>
-                <Setter Property="Foreground" Value="#14100D"/>
+                <Setter Property="Foreground" Value="#0C0A1A"/>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -2355,7 +2355,7 @@ $script:Xaml = @'
     <Style TargetType="ProgressBar">
       <Setter Property="Height" Value="8"/>
       <Setter Property="Foreground" Value="{StaticResource Accent}"/>
-      <Setter Property="Background" Value="#1D232C"/>
+      <Setter Property="Background" Value="#1B2140"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ProgressBar">
@@ -2382,8 +2382,8 @@ $script:Xaml = @'
                   <Thumb>
                     <Thumb.Template>
                       <ControlTemplate TargetType="Thumb">
-                        <Border x:Name="tb" Background="#2A313C" CornerRadius="4" Margin="1"/>
-                        <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="tb" Property="Background" Value="#3D4756"/></Trigger></ControlTemplate.Triggers>
+                        <Border x:Name="tb" Background="#2A3050" CornerRadius="4" Margin="1"/>
+                        <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="tb" Property="Background" Value="#3E4870"/></Trigger></ControlTemplate.Triggers>
                       </ControlTemplate>
                     </Thumb.Template>
                   </Thumb>
@@ -2404,8 +2404,8 @@ $script:Xaml = @'
         <Border CornerRadius="14">
           <Border.Background>
             <RadialGradientBrush x:Name="bgGrad" Center="0.5,0.46" GradientOrigin="0.5,0.46" RadiusX="0.62" RadiusY="0.62">
-              <GradientStop Color="#1FE8743B" Offset="0"/>
-              <GradientStop Color="#0AE8743B" Offset="0.45"/>
+              <GradientStop Color="#1F7C5CFF" Offset="0"/>
+              <GradientStop Color="#0A7C5CFF" Offset="0.45"/>
               <GradientStop Color="#00000000" Offset="1"/>
             </RadialGradientBrush>
           </Border.Background>
@@ -2416,8 +2416,8 @@ $script:Xaml = @'
           <Ellipse.RenderTransform><ScaleTransform x:Name="glowScale" ScaleX="1" ScaleY="1"/></Ellipse.RenderTransform>
           <Ellipse.Fill>
             <RadialGradientBrush>
-              <GradientStop Color="#2CE8743B" Offset="0"/>
-              <GradientStop Color="#00E8743B" Offset="1"/>
+              <GradientStop Color="#2C7C5CFF" Offset="0"/>
+              <GradientStop Color="#007C5CFF" Offset="1"/>
             </RadialGradientBrush>
           </Ellipse.Fill>
         </Ellipse>
@@ -2430,7 +2430,7 @@ $script:Xaml = @'
         <StackPanel x:Name="hero" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-10,0,0">
           <Grid x:Name="logoWrap" Width="96" Height="96" HorizontalAlignment="Center" Opacity="0" RenderTransformOrigin="0.5,0.5">
             <Grid.RenderTransform><ScaleTransform x:Name="logoScale" ScaleX="0.5" ScaleY="0.5"/></Grid.RenderTransform>
-            <Ellipse x:Name="ring2" Width="124" Height="124" Stroke="#33E8743B" StrokeThickness="1" StrokeDashArray="1 6" RenderTransformOrigin="0.5,0.5">
+            <Ellipse x:Name="ring2" Width="124" Height="124" Stroke="#337C5CFF" StrokeThickness="1" StrokeDashArray="1 6" RenderTransformOrigin="0.5,0.5">
               <Ellipse.RenderTransform><RotateTransform x:Name="ring2Rot" Angle="0"/></Ellipse.RenderTransform>
             </Ellipse>
             <Grid x:Name="orbit1" Width="114" Height="114" RenderTransformOrigin="0.5,0.5">
@@ -2439,13 +2439,13 @@ $script:Xaml = @'
             </Grid>
             <Grid x:Name="orbit2" Width="136" Height="136" RenderTransformOrigin="0.5,0.5">
               <Grid.RenderTransform><RotateTransform x:Name="orbit2Rot" Angle="0"/></Grid.RenderTransform>
-              <Ellipse Width="3.5" Height="3.5" Fill="#B8E8743B" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+              <Ellipse Width="3.5" Height="3.5" Fill="#B87C5CFF" HorizontalAlignment="Right" VerticalAlignment="Center"/>
             </Grid>
-            <Ellipse x:Name="ring" Width="96" Height="96" Stroke="#66E8743B" StrokeThickness="1.4" StrokeDashArray="2.5 5" RenderTransformOrigin="0.5,0.5">
+            <Ellipse x:Name="ring" Width="96" Height="96" Stroke="#667C5CFF" StrokeThickness="1.4" StrokeDashArray="2.5 5" RenderTransformOrigin="0.5,0.5">
               <Ellipse.RenderTransform><RotateTransform x:Name="ringRot" Angle="0"/></Ellipse.RenderTransform>
             </Ellipse>
-            <Border Width="68" Height="68" CornerRadius="18" BorderBrush="#55E8743B" BorderThickness="1" Background="#14E8743B">
-              <Border.Effect><DropShadowEffect x:Name="logoFx" Color="#E8743B" BlurRadius="26" Opacity="0.35" ShadowDepth="0"/></Border.Effect>
+            <Border Width="68" Height="68" CornerRadius="18" BorderBrush="#557C5CFF" BorderThickness="1" Background="#147C5CFF">
+              <Border.Effect><DropShadowEffect x:Name="logoFx" Color="#7C5CFF" BlurRadius="26" Opacity="0.35" ShadowDepth="0"/></Border.Effect>
               <Viewbox Width="30" Height="30">
                 <Path x:Name="logoBolt" Data="M 15,1 L 3,17 L 11,17 L 9,29 L 23,11 L 14,11 Z" Fill="{StaticResource Accent}"/>
               </Viewbox>
@@ -2488,8 +2488,8 @@ $script:Xaml = @'
         <Border Grid.Column="0" Background="{StaticResource Bg1}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0" CornerRadius="14,0,0,14">
           <DockPanel LastChildFill="True">
             <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="22,24,16,18">
-              <Border x:Name="sideLogo" Width="34" Height="34" CornerRadius="10" Background="#18E8743B" BorderBrush="#44E8743B" BorderThickness="1">
-                <Border.Effect><DropShadowEffect x:Name="sideFx" Color="#E8743B" BlurRadius="8" Opacity="0.3" ShadowDepth="0"/></Border.Effect>
+              <Border x:Name="sideLogo" Width="34" Height="34" CornerRadius="10" Background="#187C5CFF" BorderBrush="#447C5CFF" BorderThickness="1">
+                <Border.Effect><DropShadowEffect x:Name="sideFx" Color="#7C5CFF" BlurRadius="8" Opacity="0.3" ShadowDepth="0"/></Border.Effect>
                 <Viewbox Width="16" Height="16"><Path Data="M 15,1 L 3,17 L 11,17 L 9,29 L 23,11 L 14,11 Z" Fill="{StaticResource Accent}"/></Viewbox>
               </Border>
               <StackPanel Margin="11,0,0,0" VerticalAlignment="Center">
@@ -2515,7 +2515,7 @@ $script:Xaml = @'
             </StackPanel>
 
             <Grid DockPanel.Dock="Top">
-            <Border x:Name="navHi" Background="#1B2028" CornerRadius="8" Height="36" VerticalAlignment="Top" Margin="10,0" Visibility="Collapsed">
+            <Border x:Name="navHi" Background="#191E36" CornerRadius="8" Height="36" VerticalAlignment="Top" Margin="10,0" Visibility="Collapsed">
               <Border.RenderTransform><TranslateTransform x:Name="navHiT" Y="0"/></Border.RenderTransform>
             </Border>
             <StackPanel x:Name="navPanel">
@@ -2642,7 +2642,7 @@ $script:Xaml = @'
                   <TextBlock FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
                     Text="Honest expectations: most Windows tweaks are worth a few percent at best and help 1% lows and latency more than average FPS. Each toggle shows an impact rating. Your old values are saved before any change, so Revert restores exactly what you had."/>
                 </Border>
-                <Border x:Name="bannerReboot" Visibility="Collapsed" Background="#1F1A0E" BorderBrush="#5A4A1E" BorderThickness="1" CornerRadius="10" Padding="14,9" Margin="0,0,0,10">
+                <Border x:Name="bannerReboot" Visibility="Collapsed" Background="#161326" BorderBrush="#5A4A1E" BorderThickness="1" CornerRadius="10" Padding="14,9" Margin="0,0,0,10">
                   <TextBlock x:Name="bannerRebootText" FontSize="12.5" Foreground="{StaticResource Warn}" TextWrapping="Wrap"/>
                 </Border>
                 <DockPanel Margin="0,0,0,10" LastChildFill="True">
@@ -3003,7 +3003,7 @@ $script:Xaml = @'
         </Grid>
       </Grid>
 
-      <Border x:Name="toast" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,26,54" Visibility="Collapsed" IsHitTestVisible="False" Background="#1B2028" BorderBrush="#E8743B" BorderThickness="1" CornerRadius="10" MinWidth="240" MaxWidth="380">
+      <Border x:Name="toast" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,26,54" Visibility="Collapsed" IsHitTestVisible="False" Background="#191E36" BorderBrush="#7C5CFF" BorderThickness="1" CornerRadius="10" MinWidth="240" MaxWidth="380">
         <Border.RenderTransform><TranslateTransform x:Name="toastT" X="440"/></Border.RenderTransform>
         <Border.Effect><DropShadowEffect Color="#000000" BlurRadius="18" Opacity="0.5" ShadowDepth="4"/></Border.Effect>
         <StackPanel>
@@ -3134,12 +3134,12 @@ function Set-Spinner {
 
 function Add-CardHover {
     param($Card)
-    $Card.BorderBrush = New-Object Windows.Media.SolidColorBrush -ArgumentList ([Windows.Media.ColorConverter]::ConvertFromString('#232933'))
+    $Card.BorderBrush = New-Object Windows.Media.SolidColorBrush -ArgumentList ([Windows.Media.ColorConverter]::ConvertFromString('#242A47'))
     $Card.Add_MouseEnter({
         param($s, $e)
         if ($script:AnimOn) {
             $ca = New-Object Windows.Media.Animation.ColorAnimation
-            $ca.To = [Windows.Media.ColorConverter]::ConvertFromString('#7A4527'); $ca.Duration = Get-Dur 140
+            $ca.To = [Windows.Media.ColorConverter]::ConvertFromString('#3C3280'); $ca.Duration = Get-Dur 140
             $s.BorderBrush.BeginAnimation([Windows.Media.SolidColorBrush]::ColorProperty, $ca)
         }
     })
@@ -3147,7 +3147,7 @@ function Add-CardHover {
         param($s, $e)
         if ($script:AnimOn) {
             $ca = New-Object Windows.Media.Animation.ColorAnimation
-            $ca.To = [Windows.Media.ColorConverter]::ConvertFromString('#232933'); $ca.Duration = Get-Dur 240
+            $ca.To = [Windows.Media.ColorConverter]::ConvertFromString('#242A47'); $ca.Duration = Get-Dur 240
             $s.BorderBrush.BeginAnimation([Windows.Media.SolidColorBrush]::ColorProperty, $ca)
         }
     })
@@ -3162,7 +3162,7 @@ function Update-ApplyGlow {
     if ($script:Sel.Count -gt 0 -and $script:AnimOn) {
         if (-not $btn.Effect) {
             $fx = New-Object Windows.Media.Effects.DropShadowEffect
-            $fx.Color = [Windows.Media.ColorConverter]::ConvertFromString('#E8743B')
+            $fx.Color = [Windows.Media.ColorConverter]::ConvertFromString('#7C5CFF')
             $fx.ShadowDepth = 0; $fx.Opacity = 0.85; $fx.BlurRadius = 6
             $btn.Effect = $fx
             Start-Forever $fx ([Windows.Media.Effects.DropShadowEffect]::BlurRadiusProperty) 4 22 1.0 $true
@@ -3178,7 +3178,7 @@ function Set-Ambient {
         Start-Forever $ui.sideFx $blur 6 18 2.8 $true
         if (-not $ui.btnOptimizeAll.Effect) {
             $fx = New-Object Windows.Media.Effects.DropShadowEffect
-            $fx.Color = [Windows.Media.ColorConverter]::ConvertFromString('#E8743B')
+            $fx.Color = [Windows.Media.ColorConverter]::ConvertFromString('#7C5CFF')
             $fx.ShadowDepth = 0; $fx.Opacity = 0.7; $fx.BlurRadius = 6
             $ui.btnOptimizeAll.Effect = $fx
             Start-Forever $fx $blur 6 26 1.7 $true
@@ -3201,7 +3201,7 @@ function Start-Particles {
         $size = 2 + $rnd.NextDouble() * 2.6
         $e = New-Object Windows.Shapes.Ellipse
         $e.Width = $size; $e.Height = $size
-        $e.Fill = Get-Brush '#E8743B' (0.35 + $rnd.NextDouble() * 0.4)
+        $e.Fill = Get-Brush '#7C5CFF' (0.35 + $rnd.NextDouble() * 0.4)
         [Windows.Controls.Canvas]::SetLeft($e, $rnd.NextDouble() * $w)
         [Windows.Controls.Canvas]::SetTop($e, $h + 8)
         $tt = New-Object Windows.Media.TranslateTransform
@@ -3494,7 +3494,7 @@ function Set-EnterContent {
     $tb.Text = $Text
     $tb.FontSize = 14
     $tb.FontWeight = 'Bold'
-    $tb.Foreground = Get-Brush '#160E09'
+    $tb.Foreground = Get-Brush '#0D0A1F'
     [void]$sp.Children.Add($tb)
     $script:EnterArrowT = $null
     if ($Arrow) {
@@ -3502,7 +3502,7 @@ function Set-EnterContent {
         $ar.Text = [string][char]0x2192
         $ar.FontSize = 15
         $ar.FontWeight = 'Bold'
-        $ar.Foreground = Get-Brush '#160E09'
+        $ar.Foreground = Get-Brush '#0D0A1F'
         $ar.Margin = '12,0,0,0'
         $t = New-Object Windows.Media.TranslateTransform
         $ar.RenderTransform = $t
@@ -3575,7 +3575,7 @@ function Start-Flash {
     param($Card)
     if (-not $Card -or -not $script:AnimOn -or $Card.BorderBrush -isnot [Windows.Media.SolidColorBrush]) { return }
     $ca = New-Object Windows.Media.Animation.ColorAnimation
-    $ca.To = Get-Color '#E8743B'; $ca.Duration = Get-Dur 200; $ca.AutoReverse = $true
+    $ca.To = Get-Color '#7C5CFF'; $ca.Duration = Get-Dur 200; $ca.AutoReverse = $true
     try { $Card.BorderBrush.BeginAnimation([Windows.Media.SolidColorBrush]::ColorProperty, $ca) } catch { }
 }
 
@@ -3606,7 +3606,7 @@ function Show-Toast {
     param([string]$Text, [string]$Kind = 'ok')
     $ui = $script:UI
     if (-not $ui.toast) { return }
-    $hex = switch ($Kind) { 'ok' { '#3FB950' } 'err' { '#E5534B' } 'warn' { '#D9A23A' } default { '#E8743B' } }
+    $hex = switch ($Kind) { 'ok' { '#2ED3A0' } 'err' { '#FF5C7A' } 'warn' { '#FFB547' } default { '#7C5CFF' } }
     $ui.toast.BorderBrush = Get-Brush $hex
     $ui.toastBar.Fill = Get-Brush $hex
     $ui.toastText.Text = $Text
@@ -3640,8 +3640,8 @@ function Start-Bokeh {
         $e = New-Object Windows.Shapes.Ellipse
         $e.Width = $size; $e.Height = $size
         $rg = New-Object Windows.Media.RadialGradientBrush
-        [void]$rg.GradientStops.Add((New-Object Windows.Media.GradientStop -ArgumentList (Get-Color '#26E8743B'), 0.0))
-        [void]$rg.GradientStops.Add((New-Object Windows.Media.GradientStop -ArgumentList (Get-Color '#00E8743B'), 1.0))
+        [void]$rg.GradientStops.Add((New-Object Windows.Media.GradientStop -ArgumentList (Get-Color '#267C5CFF'), 0.0))
+        [void]$rg.GradientStops.Add((New-Object Windows.Media.GradientStop -ArgumentList (Get-Color '#007C5CFF'), 1.0))
         $e.Fill = $rg
         [Windows.Controls.Canvas]::SetLeft($e, $rnd.NextDouble() * $w)
         [Windows.Controls.Canvas]::SetTop($e, $rnd.NextDouble() * $h)
@@ -3660,7 +3660,7 @@ function Start-Ripple {
     $c = $script:UI.particles
     $e = New-Object Windows.Shapes.Ellipse
     $e.Width = 40; $e.Height = 40
-    $e.Stroke = Get-Brush '#E8743B'
+    $e.Stroke = Get-Brush '#7C5CFF'
     $e.StrokeThickness = 1.5
     $e.Opacity = 0.7
     $e.IsHitTestVisible = $false
@@ -3716,7 +3716,7 @@ function Start-LandingAmbient {
     $ui.logoBolt.BeginAnimation([Windows.UIElement]::OpacityProperty, $ka)
     # the enter button breathes
     $fx = New-Object Windows.Media.Effects.DropShadowEffect
-    $fx.Color = Get-Color '#E8743B'; $fx.ShadowDepth = 0; $fx.Opacity = 0.55; $fx.BlurRadius = 8
+    $fx.Color = Get-Color '#7C5CFF'; $fx.ShadowDepth = 0; $fx.Opacity = 0.55; $fx.BlurRadius = 8
     $ui.btnEnter.Effect = $fx
     Start-Forever $fx ([Windows.Media.Effects.DropShadowEffect]::BlurRadiusProperty) 8 36 1.8 $true
     # chips bob gently, out of step with each other
@@ -4904,14 +4904,14 @@ function Register-Events {
     $win = $ui.Win
 
     # landing text
-    $ui.lnTag.Text   = Space-Text 'WINDOWS TUNING FOR RUST'
+    $ui.lnTag.Text   = Space-Text 'MEASURE  -  TUNE  -  VERIFY'
     foreach ($ch in 'ROM-OPTI'.ToCharArray()) {
         $tb = New-Object Windows.Controls.TextBlock
         $tb.Text = [string]$ch
         $tb.FontFamily = 'Bahnschrift, Segoe UI Semibold'
         $tb.FontSize = 64
         $tb.FontWeight = 'SemiBold'
-        $tb.Foreground = New-Object Windows.Media.SolidColorBrush -ArgumentList (Get-Color '#E8EBEF')
+        $tb.Foreground = New-Object Windows.Media.SolidColorBrush -ArgumentList (Get-Color '#ECEFFA')
         $tb.Background = [Windows.Media.Brushes]::Transparent
         $tb.Margin = '0,0,5,0'
         $tb.Opacity = 0
@@ -4919,19 +4919,19 @@ function Register-Events {
             if (-not $script:AnimOn) { return }
             if ($s.RenderTransform -is [Windows.Media.TranslateTransform]) { $s.RenderTransform.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, (New-DAnim $s.RenderTransform.Y -10 150 0 (New-Ease))) }
             $ca = New-Object Windows.Media.Animation.ColorAnimation
-            $ca.To = Get-Color '#F58A55'; $ca.Duration = Get-Dur 150
+            $ca.To = Get-Color '#A28BFF'; $ca.Duration = Get-Dur 150
             $s.Foreground.BeginAnimation([Windows.Media.SolidColorBrush]::ColorProperty, $ca)
         })
         $tb.Add_MouseLeave({ param($s, $e)
             if (-not $script:AnimOn) { return }
             if ($s.RenderTransform -is [Windows.Media.TranslateTransform]) { $s.RenderTransform.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, (New-DAnim $s.RenderTransform.Y 0 240 0 (New-Ease))) }
             $ca = New-Object Windows.Media.Animation.ColorAnimation
-            $ca.To = Get-Color '#E8EBEF'; $ca.Duration = Get-Dur 260
+            $ca.To = Get-Color '#ECEFFA'; $ca.Duration = Get-Dur 260
             $s.Foreground.BeginAnimation([Windows.Media.SolidColorBrush]::ColorProperty, $ca)
         })
         [void]$ui.lnTitle.Children.Add($tb)
     }
-    $ui.lnSub.Text   = Space-Text 'OPTIMIZER'
+    $ui.lnSub.Text   = Space-Text 'PERFORMANCE TUNER'
     Set-EnterContent 'Preparing...' $false
     $ui.btnEnter.IsEnabled = $false
 
