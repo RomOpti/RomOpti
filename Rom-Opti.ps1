@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-  DAQUEECE OPTIMIZER v7  -  Windows tuning for Rust and other CPU-bound games
+  ROM-OPTI v7  -  Windows tuning for Rust and other CPU-bound games
 
   Start it with Run-RomOpti.bat (or right-click this file > Run with PowerShell).
   It asks for administrator rights once.
@@ -22,8 +22,16 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
         try { Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $PSCommandPath) } catch { }
         exit
     }
-    # Pasted into a normal (non-admin) PowerShell window: it cannot relaunch itself from memory.
-    Write-Host 'Daqueece Optimizer needs administrator rights. Open PowerShell as Administrator and run it again.' -ForegroundColor Yellow
+    # Started from memory (irm ... | iex): there is no file to relaunch, so fetch the same script
+    # from the public repo into %TEMP% and start that copy elevated. Nothing else is downloaded.
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $romTmp = Join-Path ([IO.Path]::GetTempPath()) 'Rom-Opti.ps1'
+        Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/RomOpti/RomOpti/main/Rom-Opti.ps1' -OutFile $romTmp -UseBasicParsing
+        Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $romTmp)
+    } catch {
+        Write-Host 'Rom-Opti needs administrator rights and could not relaunch itself. Open PowerShell as Administrator and run the command again.' -ForegroundColor Yellow
+    }
     return
 }
 
@@ -1669,7 +1677,7 @@ function New-RestorePoint {
     try {
         Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
         Set-Reg $key 'SystemRestorePointCreationFrequency' 0
-        Checkpoint-Computer -Description 'Daqueece Optimizer' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
+        Checkpoint-Computer -Description 'Rom-Opti' -RestorePointType 'MODIFY_SETTINGS' -ErrorAction Stop
     } finally {
         if ($null -eq $old) { Remove-RegValue $key 'SystemRestorePointCreationFrequency' } else { Set-Reg $key 'SystemRestorePointCreationFrequency' $old }
     }
@@ -2039,7 +2047,7 @@ function Export-OptProfile {
     foreach ($id in $script:Cards.Keys) { if ($script:Cards[$id].Applied) { $applied += $id } }
     $tcp = $null; try { $tcp = Get-TcpStateBg } catch { }
     $obj = @{
-        Format = 1; App = 'Daqueece Optimizer'; Version = $script:Version; Exported = (Get-Date).ToString('s')
+        Format = 1; App = 'Rom-Opti'; Version = $script:Version; Exported = (Get-Date).ToString('s')
         Windows = $F.OsName; Build = $F.Build; Cpu = $F.CpuName; RamGB = $F.RamGB
         Applied = $applied; Tcp = $tcp; NetBaseline = (Get-NetBaseline); Journal = $script:Journal
     }
@@ -2049,14 +2057,14 @@ function Export-OptProfile {
 function Import-OptProfile {
     param([string]$Path)
     $j = ConvertFrom-Json (Get-Content -LiteralPath $Path -Raw -Encoding UTF8)
-    if ($j.App -ne 'Daqueece Optimizer') { throw 'That file is not a Daqueece Optimizer profile.' }
+    if ($j.App -notin 'Rom-Opti', 'Rom-Opti') { throw 'That file is not a Rom-Opti profile.' }
     return @($j.Applied)
 }
 # ---- UI definition (XAML) -----------------------------------------------------
 $script:Xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Daqueece Optimizer" Width="1140" Height="740"
+        Title="Rom-Opti" Width="1140" Height="740"
         WindowStartupLocation="CenterScreen" WindowStyle="None" AllowsTransparency="True"
         Background="Transparent" ResizeMode="CanMinimize" FontFamily="Segoe UI"
         UseLayoutRounding="True" SnapsToDevicePixels="True">
@@ -2449,7 +2457,7 @@ $script:Xaml = @'
           <TextBlock x:Name="lnSub" Opacity="0" Margin="0,2,0,0" HorizontalAlignment="Center" FontFamily="Bahnschrift, Segoe UI Semibold" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource Accent}"/>
           <Rectangle x:Name="lnUnder" Width="0" Height="2" RadiusX="1" RadiusY="1" Fill="{StaticResource Accent}" HorizontalAlignment="Center" Margin="0,10,0,0" Opacity="0.85"/>
           <TextBlock x:Name="lnLine" Opacity="0" Margin="0,16,0,0" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="500" FontSize="14" LineHeight="22" Foreground="{StaticResource Muted}"
-                     Text="Higher FPS and tighter 1% lows: real Windows, scheduler and GPU tweaks, a full app debloat and a startup cleaner. Every change is journaled and fully reversible, and every toggle tells you what it is actually worth."/>
+                     Text="Windows, scheduler and GPU tweaks, an app debloat and a startup cleaner. Gains depend on your hardware and are often small or zero if the GPU is the limit. Every change is journaled and reversible, and every toggle says what it is realistically worth."/>
 
           <Button x:Name="btnEnter" Opacity="0" Style="{StaticResource Enter}" HorizontalAlignment="Center" Margin="0,36,0,0"/>
 
@@ -2485,7 +2493,7 @@ $script:Xaml = @'
                 <Viewbox Width="16" Height="16"><Path Data="M 15,1 L 3,17 L 11,17 L 9,29 L 23,11 L 14,11 Z" Fill="{StaticResource Accent}"/></Viewbox>
               </Border>
               <StackPanel Margin="11,0,0,0" VerticalAlignment="Center">
-                <TextBlock Text="DAQUEECE" FontFamily="Bahnschrift, Segoe UI Semibold" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
+                <TextBlock Text="ROM-OPTI" FontFamily="Bahnschrift, Segoe UI Semibold" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
                 <TextBlock Text="OPTIMIZER" FontFamily="Bahnschrift, Segoe UI Semibold" FontSize="10.5" Foreground="{StaticResource Accent}"/>
               </StackPanel>
             </StackPanel>
@@ -2721,7 +2729,7 @@ $script:Xaml = @'
                   <StackPanel>
                     <TextBlock Text="Session boosts" FontSize="14" FontWeight="Bold" Foreground="{StaticResource Text}"/>
                     <TextBlock Margin="0,4,0,12" FontSize="12" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                      Text="These run only while a session is active and undo themselves when it ends or when you close Daqueece Optimizer. Startup settings are never changed, so nothing is left behind if something crashes."/>
+                      Text="These run only while a session is active and undo themselves when it ends or when you close Rom-Opti. Startup settings are never changed, so nothing is left behind if something crashes."/>
                     <CheckBox x:Name="sesTimer" Style="{StaticResource Switch}" Content="Hold the finest system timer (usually 0.5 ms)" IsChecked="True" Margin="0,5"/>
                     <CheckBox x:Name="sesPurge" Style="{StaticResource Switch}" Content="Smart standby-memory cleaner (only when free memory runs low)" IsChecked="True" Margin="0,5"/>
                     <CheckBox x:Name="sesPrio" Style="{StaticResource Switch}" Content="Raise the game to Above Normal priority when it starts" IsChecked="True" Margin="0,5"/>
@@ -3348,7 +3356,7 @@ function Start-DebloatRemove {
     if ($sel.Count -eq 0) { Write-Log 'Nothing selected to remove.' 'warn'; return }
     $msg = "Remove $($sel.Count) item(s) from this PC?"
     if (@($sel | Where-Object { $_.Item.Cat -eq 'xbox' }).Count -gt 0) { $msg += "`n`nYou ticked Xbox / Gaming Services items. Game Pass and some game launchers will stop working without them." }
-    $ans = [Windows.MessageBox]::Show($msg, 'Daqueece Optimizer', 'YesNo', 'Warning')
+    $ans = [Windows.MessageBox]::Show($msg, 'Rom-Opti', 'YesNo', 'Warning')
     if ($ans -ne 'Yes') { return }
     Set-DbBusy $true
     try { Write-Log 'Creating a restore point...' 'info'; Invoke-UiPump; New-RestorePointAsync; Write-Log 'Restore point created.' 'ok' }
@@ -3771,7 +3779,7 @@ function Start-Prepare {
         Set-EnterContent 'ENTER OPTIMIZER' $true
         $script:UI.btnEnter.IsEnabled = $true
         if ($script:Facts.DualCcdX3D) { $script:UI.sesPin.Visibility = 'Visible' }
-        Write-Log "Daqueece Optimizer $($script:Version) ready on $($script:Facts.OsName)." 'accent'
+        Write-Log "Rom-Opti $($script:Version) ready on $($script:Facts.OsName)." 'accent'
     }
 }
 
@@ -3822,6 +3830,7 @@ function Save-Settings {
 # Test      helps some PCs and hurts others, always opt-in, measure it
 # Advanced  real security or stability tradeoff, always opt-in
 # Optional  preferences and situational tweaks
+$script:SecurityIds = @('rust_defender', 'adv_vbs', 'sch_hyper', 'sch_mitig')
 $script:TestTierIds = @('sch_hags', 'gpu_fsegl', 'gpu_fso', 'gpu_mpo', 'sch_memcomp', 'sch_tick', 'gpu_tdr', 'net_lat')
 
 function Get-TweakTier {
@@ -4071,7 +4080,7 @@ function Start-DnsTest {
 # ---- restore and profiles ---------------------------------------------------------------------------------
 function Invoke-RevertAll {
     $ui = $script:UI
-    $ans = [Windows.MessageBox]::Show('Undo every tweak this app applied and restore your original values?', 'Daqueece Optimizer', 'YesNo', 'Question')
+    $ans = [Windows.MessageBox]::Show('Undo every tweak this app applied and restore your original values?', 'Rom-Opti', 'YesNo', 'Question')
     if ($ans -ne 'Yes') { return }
     $ids = @($script:Journal.Keys)
     $ok = 0; $fail = 0; $explorer = $false
@@ -4091,7 +4100,7 @@ function Invoke-RevertAll {
 
 function Invoke-ExportProfile {
     $dir = [Environment]::GetFolderPath('Desktop')
-    $path = Join-Path $dir ("DaqueeceOptimizer-Profile-{0}.json" -f (Get-Date -Format 'yyyy-MM-dd'))
+    $path = Join-Path $dir ("RomOpti-Profile-{0}.json" -f (Get-Date -Format 'yyyy-MM-dd'))
     Export-OptProfile $path
     $script:UI.txtRestoreStatus.Text = "Profile saved to $path"
     $script:UI.txtRestoreStatus.Foreground = Get-Res 'Good'
@@ -4101,7 +4110,7 @@ function Invoke-ExportProfile {
 
 function Invoke-ImportProfile {
     $dlg = New-Object Microsoft.Win32.OpenFileDialog
-    $dlg.Filter = 'Daqueece Optimizer profile (*.json)|*.json'
+    $dlg.Filter = 'Rom-Opti profile (*.json)|*.json'
     if (-not $dlg.ShowDialog()) { return }
     $ids = @(Import-OptProfile $dlg.FileName)
     $n = 0
@@ -4502,6 +4511,14 @@ function Invoke-OptRun {
     $ui = $script:UI
     $sel = @(Get-SelectedTweaks)
     if ($sel.Count -eq 0) { Write-Log 'Nothing selected. Flip some switches first.' 'warn'; return }
+    if ($Apply) {
+        $risky = @($sel | Where-Object { $script:SecurityIds -contains $_.Id })
+        if ($risky.Count -gt 0) {
+            $names = ($risky | ForEach-Object { '  - ' + $_.Name }) -join "`n"
+            $ans = [Windows.MessageBox]::Show("These changes weaken a Windows security protection or exclude files from scanning:`n`n$names`n`nThey can be undone from this app. Apply them anyway?", 'Rom-Opti security confirmation', 'YesNo', 'Warning')
+            if ($ans -ne 'Yes') { Write-Log 'Security-related tweaks were not applied.' 'warn'; return }
+        }
+    }
     $btns = @('btnOptApply', 'btnOptRevert', 'btnOptClear', 'btnOptRec')
     Set-Busy $true $btns
     $needExplorer = $false; $reboot = @(); $ok = 0; $fail = 0
@@ -4691,7 +4708,7 @@ function Start-CleanJob {
     if ($Delete -and $tasks.Count -eq 0) { Write-Log 'Nothing ticked to clean.' 'warn'; return }
     if (-not $Delete) { $tasks = @($script:CleanTasks) }
     if ($Delete) {
-        $ans = [Windows.MessageBox]::Show('This permanently deletes the ticked items. Continue?', 'Daqueece Optimizer', 'YesNo', 'Warning')
+        $ans = [Windows.MessageBox]::Show('This permanently deletes the ticked items. Continue?', 'Rom-Opti', 'YesNo', 'Warning')
         if ($ans -ne 'Yes') { return }
     }
     $script:CleanCtx = @{ Busy = $true; Done = 0; Count = $tasks.Count; Delete = $Delete; Freed = 0.0 }
@@ -4888,7 +4905,7 @@ function Register-Events {
 
     # landing text
     $ui.lnTag.Text   = Space-Text 'WINDOWS TUNING FOR RUST'
-    foreach ($ch in 'DAQUEECE'.ToCharArray()) {
+    foreach ($ch in 'ROM-OPTI'.ToCharArray()) {
         $tb = New-Object Windows.Controls.TextBlock
         $tb.Text = [string]$ch
         $tb.FontFamily = 'Bahnschrift, Segoe UI Semibold'
@@ -4976,7 +4993,7 @@ function Register-Events {
             $names = @()
             foreach ($cb in $script:UI.pnlKill.Children) { if ($cb.IsChecked) { $names += $script:KillGroups[[string]$cb.Tag] } }
             if ($names.Count -eq 0) { Write-Log 'No app groups ticked.' 'warn'; return }
-            $ans = [Windows.MessageBox]::Show('Close the ticked apps now? Unsaved work in them will be lost.', 'Daqueece Optimizer', 'YesNo', 'Warning')
+            $ans = [Windows.MessageBox]::Show('Close the ticked apps now? Unsaved work in them will be lost.', 'Rom-Opti', 'YesNo', 'Warning')
             if ($ans -ne 'Yes') { return }
             $script:UI.btnKill.IsEnabled = $false
             try { Close-BackgroundApps $names } finally { $script:UI.btnKill.IsEnabled = $true }
@@ -5044,5 +5061,5 @@ try {
 } catch {
     $msg = $_.Exception.Message
     try { Add-Content -LiteralPath $script:LogFile -Value ("{0} [fatal] {1}`n{2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg, $_.ScriptStackTrace) } catch { }
-    [void][Windows.MessageBox]::Show("Daqueece Optimizer hit an error and could not continue:`n`n$msg`n`nDetails were saved to $($script:LogFile)", 'Daqueece Optimizer', 'OK', 'Error')
+    [void][Windows.MessageBox]::Show("Rom-Opti hit an error and could not continue:`n`n$msg`n`nDetails were saved to $($script:LogFile)", 'Rom-Opti', 'OK', 'Error')
 }
