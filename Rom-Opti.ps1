@@ -179,9 +179,58 @@ function Write-Log {
 function Invoke-UiPump {
     # Lets WPF repaint during a synchronous loop. Only called from code paths where the
     # buttons are disabled, so re-entrancy is not a concern.
+    if (-not $script:UI -or -not $script:UI.Win) { return }
     $frame = New-Object System.Windows.Threading.DispatcherFrame
     [void]$script:UI.Win.Dispatcher.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Background, [action]{ $frame.Continue = $false })
     [System.Windows.Threading.Dispatcher]::PushFrame($frame)
+}
+
+function Wait-Ui {
+    # Sleep without freezing the window: keeps painting and animating while it waits.
+    param([int]$Ms)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $Ms) { Invoke-UiPump; Start-Sleep -Milliseconds 12 }
+}
+
+function Invoke-Blocking {
+    # Runs slow work in a background runspace and keeps the UI alive while waiting.
+    # The script block must be self-contained. -Functions copies named functions into the worker.
+    param([scriptblock]$Script, [object[]]$ArgList = @(), [string[]]$Functions = @(), [int]$TimeoutSec = 180)
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.Open()
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    try {
+        $pre = "function Invoke-UiPump {}`n"
+        foreach ($fn in $Functions) { $pre += ("function {0} {{`n{1}`n}}`n" -f $fn, (Get-Item -LiteralPath "function:$fn").ScriptBlock.ToString()) }
+        [void]$ps.AddScript($pre)
+        [void]$ps.Invoke()
+        $ps.Commands.Clear()
+        [void]$ps.AddScript($Script.ToString())
+        foreach ($a in $ArgList) { [void]$ps.AddArgument($a) }
+        $h = $ps.BeginInvoke()
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not $h.IsCompleted) {
+            if ($sw.Elapsed.TotalSeconds -gt $TimeoutSec) { $ps.Stop(); throw 'The operation timed out.' }
+            Invoke-UiPump
+            Start-Sleep -Milliseconds 15
+        }
+        $out = $ps.EndInvoke($h)
+        if ($ps.Streams.Error.Count -gt 0 -and -not $out) { throw $ps.Streams.Error[0].ToString() }
+        return $out
+    } finally { try { $ps.Dispose(); $rs.Dispose() } catch { } }
+}
+
+function Stop-ServicesFast {
+    param([string[]]$Names)
+    if (-not $Names -or $Names.Count -eq 0) { return }
+    [void](Invoke-Blocking -ArgList @(,$Names) -Script { param($n) foreach ($s in $n) { try { Stop-Service -Name $s -Force -ErrorAction Stop } catch { } } })
+}
+
+function Start-ServicesFast {
+    param([string[]]$Names)
+    if (-not $Names -or $Names.Count -eq 0) { return }
+    [void](Invoke-Blocking -ArgList @(,$Names) -Script { param($n) foreach ($s in $n) { try { Start-Service -Name $s -ErrorAction Stop } catch { } } })
 }
 
 function Format-Bytes {
@@ -315,7 +364,7 @@ function New-SvcSnapshot {
 function Restore-SvcSnapshot {
     param($S)
     if ($S.Start -in 'Automatic', 'Manual', 'Disabled') { Set-SvcStartup $S.Name $S.Start ([bool]$S.Delayed) }
-    if ($S.Running) { Start-Service -Name $S.Name -ErrorAction SilentlyContinue }
+    if ($S.Running) { Start-ServicesFast @($S.Name) }
 }
 
 function Split-TaskPath {
@@ -338,6 +387,7 @@ function Set-TaskEnabled {
     if (-not (Get-ScheduledTask -TaskPath $p.Path -TaskName $p.Name -ErrorAction SilentlyContinue)) { return }
     if ($Enabled) { [void](Enable-ScheduledTask -TaskPath $p.Path -TaskName $p.Name -ErrorAction Stop) }
     else          { [void](Disable-ScheduledTask -TaskPath $p.Path -TaskName $p.Name -ErrorAction Stop) }
+    Invoke-UiPump
 }
 
 # ---- power plan helpers ------------------------------------------------------
@@ -354,6 +404,7 @@ function Invoke-Native {
     $ErrorActionPreference = 'Continue'
     $global:LASTEXITCODE = 0
     try { $out = (& $Command 2>&1 | ForEach-Object { "$_" }) -join ' ' } finally { $ErrorActionPreference = $prev }
+    Invoke-UiPump
     if ($LASTEXITCODE -ne 0) { throw "$($Command.ToString().Trim()) -> $($out.Trim()) (exit $LASTEXITCODE)" }
 }
 
@@ -365,6 +416,7 @@ function Invoke-NativeOut {
     $ErrorActionPreference = 'Continue'
     $global:LASTEXITCODE = 0
     try { $out = (& $Command 2>&1 | ForEach-Object { "$_" }) -join "`n" } finally { $ErrorActionPreference = $prev }
+    Invoke-UiPump
     return [pscustomobject]@{ Out = $out; Code = $global:LASTEXITCODE }
 }
 
@@ -544,12 +596,14 @@ function Invoke-TweakApply {
             $type = if ($it.T) { $it.T } else { 'DWord' }
             Set-Reg $it.P $it.N $it.V $type
         }
+        $stopNames = @()
         foreach ($s in @($T.Svc | Where-Object { $_ })) {
             $svc = Get-Service -Name $s.N -ErrorAction SilentlyContinue
             if (-not $svc) { continue }
-            if ($s.Stop -and $svc.Status -ne 'Stopped') { try { Stop-Service -Name $s.N -Force -ErrorAction Stop } catch { } }
+            if ($s.Stop -and $svc.Status -ne 'Stopped') { $stopNames += $s.N }
             Set-SvcStartup $s.N $s.S
         }
+        if ($stopNames.Count -gt 0) { Stop-ServicesFast $stopNames }
         foreach ($tk in @($T.Tasks | Where-Object { $_ })) { Set-TaskEnabled $tk $false }
         if ($T.Apply) { & $T.Apply $T }
     } catch {
@@ -608,7 +662,7 @@ function Get-TweakCatalog {
     # ======================= POWER & CPU =======================
     [void]$list.Add(@{
         Id = 'pwr_plan'; Group = 'Power'; Name = 'Performance power plan'; Impact = 2; Gain = @('FPS', 'Lows', 'Latency')
-        Desc = 'Creates a separate plan from Ultimate Performance (High Performance if unavailable): CPU never idles below 100%, aggressive boost, USB selective suspend off, PCIe link power saving off. Your current plan is remembered and restored on revert.'
+        Desc = 'Creates a separate plan from Ultimate Performance (High Performance if unavailable): CPU never idles below 100%, aggressive boost, USB selective suspend off, PCIe link power saving off, hard disks never spin down, Wi-Fi adapters at maximum performance. Your current plan is remembered and restored on revert.'
         Rec = { -not $script:Facts.Laptop }
         Note = { if ($script:Facts.Laptop) { 'Laptop detected: more heat and battery drain. Only use it plugged in.' }
                  elseif ($script:Facts.DualCcdX3D) { 'Dual-CCD X3D: core parking is left alone so AMD''s scheduler keeps working.' } }
@@ -635,6 +689,8 @@ function Get-TweakCatalog {
             [void](Set-PlanValue $guid $sub 'PERFEPP' 0)
             if (-not $script:Facts.DualCcdX3D) { [void](Set-PlanValue $guid $sub 'CPMINCORES' 100) }
             [void](Set-PlanValue $guid '2a737441-1930-4402-8d77-b2bebba308a3' '48e6b7a6-50f5-4782-a5d4-53bb8f07e226' 0)
+            [void](Set-PlanValue $guid 'SUB_DISK' 'DISKIDLE' 0)
+            [void](Set-PlanValue $guid '19cbb8fa-5279-450e-9fac-8a3d5fedd0c1' '12bbebe6-58d6-4636-95bb-3217ef867c1a' 0)
             if (-not $script:Facts.Laptop) { [void](Set-PlanValue $guid '501a4d13-42af-4429-9fd1-a8218c268e20' 'ee12f906-d277-404b-b6da-e5fa1a576df5' 0) }
             Invoke-Native { powercfg -setactive $guid }
         }
@@ -742,48 +798,49 @@ function Get-TweakCatalog {
         Note = 'Your connection drops for a second or two while the adapter settings are applied.'
         Rec = $true
         Check = { param($t)
-            $ads = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
-            if (-not $ads) { return $false }
-            foreach ($a in $ads) {
-                $pm = Get-NetAdapterPowerManagement -Name $a.Name -ErrorAction SilentlyContinue
-                if ($pm -and "$($pm.AllowComputerToTurnOffDevice)" -eq 'Enabled') { return $false }
-            }
-            return $true
+            $r = @(Invoke-Blocking -Script {
+                $ads = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
+                if (-not $ads) { return $false }
+                foreach ($a in $ads) {
+                    $pm = Get-NetAdapterPowerManagement -Name $a.Name -ErrorAction SilentlyContinue
+                    if ($pm -and "$($pm.AllowComputerToTurnOffDevice)" -eq 'Enabled') { return $false }
+                }
+                return $true })
+            return ($r.Count -gt 0 -and [bool]$r[0])
         }
         Apply = { param($t)
-            $changed = 0
-            foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-                try {
-                    $pm = Get-NetAdapterPowerManagement -Name $a.Name -ErrorAction Stop
-                    if ("$($pm.AllowComputerToTurnOffDevice)" -eq 'Enabled') {
-                        Set-Extra $t.Id ("pm|" + $a.Name) 'Enabled'
-                        Set-NetAdapterPowerManagement -Name $a.Name -AllowComputerToTurnOffDevice Disabled -ErrorAction Stop
-                        $changed++
+            $rows = @(Invoke-Blocking -Script {
+                foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
+                    try { $pm = Get-NetAdapterPowerManagement -Name $a.Name -ErrorAction Stop
+                          if ("$($pm.AllowComputerToTurnOffDevice)" -eq 'Enabled') { [pscustomobject]@{ Kind = 'pm'; Adapter = $a.Name; Kw = ''; Old = 'Enabled' } } } catch { }
+                    foreach ($kw in '*EEE', 'EEE', 'EeePhyEnable', 'GreenEthernet', 'AdvancedEEE') {
+                        $p = Get-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $kw -ErrorAction SilentlyContinue
+                        if ($p -and $p.RegistryValue -and ("$($p.RegistryValue[0])" -ne '0')) { [pscustomobject]@{ Kind = 'adv'; Adapter = $a.Name; Kw = $kw; Old = "$($p.RegistryValue[0])" } }
                     }
-                } catch { Write-Log "Adapter '$($a.Name)': power management not changeable ($($_.Exception.Message))" 'warn' }
-                foreach ($kw in '*EEE', 'EEE', 'EeePhyEnable', 'GreenEthernet', 'AdvancedEEE') {
-                    $p = Get-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $kw -ErrorAction SilentlyContinue
-                    if ($p -and $p.RegistryValue -and ("$($p.RegistryValue[0])" -ne '0')) {
-                        try {
-                            Set-Extra $t.Id ("adv|" + $a.Name + "|" + $kw) ("$($p.RegistryValue[0])")
-                            Set-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $kw -RegistryValue '0' -ErrorAction Stop
-                            $changed++
-                        } catch { }
-                    }
-                }
-            }
-            if ($changed -eq 0) { Write-Log 'Adapters already had power saving off, or do not expose these settings.' 'info' }
+                } })
+            if ($rows.Count -eq 0) { Write-Log 'Adapters already had power saving off, or do not expose these settings.' 'info'; return }
+            foreach ($r in $rows) { Set-Extra $t.Id ("{0}|{1}|{2}" -f $r.Kind, $r.Adapter, $r.Kw) $r.Old }
+            [void](Invoke-Blocking -ArgList @(,$rows) -Script {
+                param($rows)
+                foreach ($r in $rows) {
+                    try {
+                        if ($r.Kind -eq 'pm') { Set-NetAdapterPowerManagement -Name $r.Adapter -AllowComputerToTurnOffDevice Disabled -ErrorAction Stop }
+                        else { Set-NetAdapterAdvancedProperty -Name $r.Adapter -RegistryKeyword $r.Kw -RegistryValue '0' -ErrorAction Stop }
+                    } catch { }
+                } })
         }
         Undo = { param($t)
             $x = if ($script:Journal.ContainsKey($t.Id)) { $script:Journal[$t.Id].Extra } else { $null }
             if (-not $x) { return }
-            foreach ($k in @($x.Keys)) {
-                $parts = $k -split '\|'
-                try {
-                    if ($parts[0] -eq 'pm')  { Set-NetAdapterPowerManagement -Name $parts[1] -AllowComputerToTurnOffDevice Enabled -ErrorAction Stop }
-                    if ($parts[0] -eq 'adv') { Set-NetAdapterAdvancedProperty -Name $parts[1] -RegistryKeyword $parts[2] -RegistryValue ([string]$x[$k]) -ErrorAction Stop }
-                } catch { }
-            }
+            $rows = @(foreach ($k in @($x.Keys)) { $p = $k -split '\|'; [pscustomobject]@{ Kind = $p[0]; Adapter = $p[1]; Kw = $p[2]; Old = [string]$x[$k] } })
+            [void](Invoke-Blocking -ArgList @(,$rows) -Script {
+                param($rows)
+                foreach ($r in $rows) {
+                    try {
+                        if ($r.Kind -eq 'pm') { Set-NetAdapterPowerManagement -Name $r.Adapter -AllowComputerToTurnOffDevice Enabled -ErrorAction Stop }
+                        else { Set-NetAdapterAdvancedProperty -Name $r.Adapter -RegistryKeyword $r.Kw -RegistryValue $r.Old -ErrorAction Stop }
+                    } catch { }
+                } })
         }
     })
     [void]$list.Add(@{
@@ -938,6 +995,23 @@ function Get-IntelGen {
     return $null
 }
 
+function Get-NicTweakRows {
+    param([string[]]$Keywords, [string]$WantValue = '0')
+    foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and ([string]$_.PhysicalMediaType) -match '802\.3' })) {
+        foreach ($kw in $Keywords) {
+            $p = Get-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $kw -ErrorAction SilentlyContinue
+            if ($p -and $p.RegistryValue -and ("$($p.RegistryValue[0])" -ne $WantValue)) { [pscustomobject]@{ Adapter = $a.Name; Kw = $kw; Old = "$($p.RegistryValue[0])" } }
+        }
+    }
+}
+
+function Set-NicRows {
+    param($Rows, [string]$Value = '')
+    foreach ($r in @($Rows)) {
+        try { $v = if ($Value -ne '') { $Value } else { $r.Old }; Set-NetAdapterAdvancedProperty -Name $r.Adapter -RegistryKeyword $r.Kw -RegistryValue $v -ErrorAction Stop } catch { }
+    }
+}
+
 function Get-ExtraTweaks {
     $list = New-Object System.Collections.ArrayList
     $mm   = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
@@ -975,8 +1049,8 @@ function Get-ExtraTweaks {
         Rec = $false
         When = { if (-not (Get-Command Get-MMAgent -ErrorAction SilentlyContinue)) { 'Not supported on this Windows' } elseif ($script:Facts.RamGB -lt 15) { 'Needs 16 GB of RAM or more' } else { $true } }
         Check = { param($t) return (-not (Get-MMAgent).MemoryCompression) }
-        Apply = { param($t) Disable-MMAgent -MemoryCompression }
-        Undo  = { param($t) Enable-MMAgent -MemoryCompression } })
+        Apply = { param($t) [void](Invoke-Blocking -Script { Disable-MMAgent -MemoryCompression }) }
+        Undo  = { param($t) [void](Invoke-Blocking -Script { Enable-MMAgent -MemoryCompression }) } })
     [void]$list.Add(@{ Id = 'sch_tick'; Group = 'Sched'; Name = 'Disable dynamic tick'; Impact = 1; Gain = @('Latency'); Reboot = $true
         Desc = 'Makes the system timer tick at a constant rate instead of skipping ticks when idle. Some systems get steadier frame pacing. Idle power use goes up slightly.'
         Note = 'Unproven on many setups. Only keep it if you measure a difference.'
@@ -1147,17 +1221,92 @@ function Get-ExtraTweaks {
                  (RegItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'TaskbarAnimations' 0), (RegItem 'HKCU:\Software\Microsoft\Windows\DWM' 'EnableAeroPeek' 0),
                  (RegItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ListviewAlphaSelect' 0), (RegItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' 'ListviewShadow' 0) ) })
 
+    # ======================= GAME-CHANGERS (only offered where they apply) =======================
+    [void]$list.Add(@{ Id = 'sch_hpet'; Group = 'Sched'; Name = 'Remove a forced HPET timer'; Impact = 2; Gain = @('FPS', 'Lows', 'Latency'); Reboot = $true
+        Desc = 'Old tweak guides told people to run "bcdedit /set useplatformclock true", which forces the slow HPET timer for the whole OS and hurts frame pacing. If that override is on your PC, this removes it and lets Windows choose the best timer. If your PC is not forcing HPET, the tweak is hidden.'
+        Rec = $true
+        When = { if ((Get-BcdValue 'useplatformclock') -eq 'Yes') { $true } else { 'Not applicable: your PC is not forcing HPET' } }
+        Check = { param($t) return ((Get-BcdValue 'useplatformclock') -ne 'Yes') }
+        Apply = { param($t) $null = Invoke-NativeOut { bcdedit /deletevalue useplatformclock } }
+        Undo  = { param($t) Invoke-Native { bcdedit /set useplatformclock true } } })
+    [void]$list.Add(@{ Id = 'sch_fth'; Group = 'Stab'; Name = 'Fault Tolerant Heap off'; Impact = 2; Gain = @('Lows', 'Stability')
+        Desc = 'After a program crashes a few times, Windows quietly applies slow "safe mode" memory shims to it (the Fault Tolerant Heap). A game that crashed once can run permanently slower afterward, with no warning. This turns the feature off so nothing gets throttled behind your back.'
+        Rec = $true
+        Reg = @( (RegItem 'HKLM:\SOFTWARE\Microsoft\FTH' 'Enabled' 0) ) })
+    [void]$list.Add(@{ Id = 'sch_hyper'; Group = 'Adv'; Name = 'Hypervisor off (Hyper-V / VBS platform)'; Impact = 3; Gain = @('FPS', 'Lows'); Reboot = $true
+        Desc = 'Turns off the Windows hypervisor at boot. While it runs (Hyper-V, WSL2, Docker, Windows Sandbox, Memory Integrity), the whole OS sits on top of it, which costs CPU time in games. With it off you get native scheduling and timer behavior.'
+        Note = 'Breaks WSL2, Docker Desktop, Windows Sandbox, the Android subsystem and Hyper-V VMs until reverted. Reboot required.'
+        Rec = $false
+        When = { try { if ((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).HypervisorPresent) { $true } else { 'No hypervisor is running, so there is nothing to gain' } } catch { $true } }
+        Check = { param($t) return ((Get-BcdValue 'hypervisorlaunchtype') -eq 'Off') }
+        Apply = { param($t) Invoke-Native { bcdedit /set hypervisorlaunchtype off } }
+        Undo  = { param($t) $null = Invoke-NativeOut { bcdedit /set hypervisorlaunchtype auto } } })
+    [void]$list.Add(@{ Id = 'net_lat'; Group = 'Network'; Name = 'Ethernet latency mode'; Impact = 1; Gain = @('Ping', 'Latency')
+        Desc = 'Turns off interrupt moderation, large-send offload and flow control on your wired adapter. Packets reach the CPU immediately instead of being batched, which can cut jitter for UDP games. It costs a little CPU and can lower peak download speed on slow CPUs.'
+        Note = 'Wired only. Your connection drops for a moment while it applies. Measure it with the Internet tab.'
+        Rec = $false
+        When = { try { if (@(Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' -and ([string]$_.PhysicalMediaType) -match '802\.3' }).Count -gt 0) { $true } else { 'No connected wired adapter found' } } catch { 'Network adapters unavailable' } }
+        Check = { param($t)
+            if (-not $script:Journal.ContainsKey($t.Id)) { return $false }
+            $n = @(Invoke-Blocking -Functions 'Get-NicTweakRows' -Script { @(Get-NicTweakRows @('*InterruptModeration', '*FlowControl', '*LsoV2IPv4', '*LsoV2IPv6')).Count })
+            return ($n.Count -gt 0 -and [int]$n[0] -eq 0)
+        }
+        Apply = { param($t)
+            $rows = @(Invoke-Blocking -Functions 'Get-NicTweakRows' -Script { Get-NicTweakRows @('*InterruptModeration', '*FlowControl', '*LsoV2IPv4', '*LsoV2IPv6') })
+            if ($rows.Count -eq 0) { throw 'Your adapter does not expose these settings, or they are already off.' }
+            foreach ($r in $rows) { Set-Extra $t.Id ("adv|{0}|{1}" -f $r.Adapter, $r.Kw) $r.Old }
+            [void](Invoke-Blocking -Functions 'Set-NicRows' -ArgList @(,$rows) -Script { param($rows) Set-NicRows $rows '0' })
+        }
+        Undo = { param($t)
+            $x = if ($script:Journal.ContainsKey($t.Id)) { $script:Journal[$t.Id].Extra } else { $null }
+            if (-not $x) { return }
+            $rows = @(foreach ($k in @($x.Keys)) { $p = $k -split '\|'; [pscustomobject]@{ Adapter = $p[1]; Kw = $p[2]; Old = [string]$x[$k] } })
+            [void](Invoke-Blocking -Functions 'Set-NicRows' -ArgList @(,$rows) -Script { param($rows) Set-NicRows $rows })
+        } })
+    [void]$list.Add(@{ Id = 'svc_nvtelem'; Group = 'Svc'; Name = 'NVIDIA telemetry service off'; Impact = 1; Gain = @('Background')
+        Desc = 'Stops the NVIDIA telemetry container, which uploads usage data and wakes up in the background. Your drivers, Control Panel and GeForce features keep working.'
+        Rec = $true
+        When = { if (Get-Service -Name NvTelemetryContainer -ErrorAction SilentlyContinue) { $true } else { 'NVIDIA telemetry service not present' } }
+        Svc = @( @{ N = 'NvTelemetryContainer'; S = 'Disabled'; Stop = $true; D = 'Automatic' } ) })
+    [void]$list.Add(@{ Id = 'app_discord'; Group = 'Bg'; Name = 'Discord hardware acceleration off'; Impact = 1; Gain = @('FPS', 'Lows')
+        Desc = 'Discord renders its interface on your GPU by default, competing with your game for GPU time and VRAM. Turning it off moves that work to the CPU. The gain shows most on mid-range GPUs. Voice and screen share look the same.'
+        Note = 'Discord must be closed while this applies, then reopen it.'
+        Rec = $true
+        When = { if (-not (Test-Path -LiteralPath (Join-Path $env:APPDATA 'discord\settings.json'))) { 'Discord settings file not found' } elseif (Get-Process -Name Discord -ErrorAction SilentlyContinue) { 'Close Discord first, then reopen this page' } else { $true } }
+        Check = { param($t)
+            $f = Join-Path $env:APPDATA 'discord\settings.json'
+            if (-not (Test-Path -LiteralPath $f)) { return $false }
+            try { $j = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json; return (($j.PSObject.Properties.Name -contains 'enableHardwareAcceleration') -and ($j.enableHardwareAcceleration -eq $false)) } catch { return $false } }
+        Apply = { param($t)
+            $f = Join-Path $env:APPDATA 'discord\settings.json'
+            if (Get-Process -Name Discord -ErrorAction SilentlyContinue) { throw 'Close Discord first.' }
+            $j = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json
+            $has = ($j.PSObject.Properties.Name -contains 'enableHardwareAcceleration')
+            Set-Extra $t.Id 'Old' $(if ($has) { [string]$j.enableHardwareAcceleration } else { '(absent)' })
+            if (-not (Test-Path -LiteralPath "$f.romopti.bak")) { Copy-Item -LiteralPath $f -Destination "$f.romopti.bak" -Force }
+            if ($has) { $j.enableHardwareAcceleration = $false } else { Add-Member -InputObject $j -NotePropertyName 'enableHardwareAcceleration' -NotePropertyValue $false -Force }
+            Write-TextFile $f (ConvertTo-Json -InputObject $j -Depth 20) }
+        Undo = { param($t)
+            $f = Join-Path $env:APPDATA 'discord\settings.json'
+            if (-not (Test-Path -LiteralPath $f)) { return }
+            if (Get-Process -Name Discord -ErrorAction SilentlyContinue) { throw 'Close Discord first.' }
+            $old = Get-Extra $t.Id 'Old'
+            $j = Get-Content -LiteralPath $f -Raw | ConvertFrom-Json
+            if ($old -eq '(absent)') { [void]$j.PSObject.Properties.Remove('enableHardwareAcceleration') }
+            else { $j.enableHardwareAcceleration = ($old -ne 'False') }
+            Write-TextFile $f (ConvertTo-Json -InputObject $j -Depth 20) } })
+
     return $list.ToArray()
 }
 # ---- findings: what is actually limiting this PC -------------------------------
 function Get-Findings {
-    $F = $script:Facts
+    param($F = $script:Facts, $NativeOk = $script:NativeOk)
     $out = New-Object System.Collections.ArrayList
     function Add-Finding { param($Level, $Title, $Detail) [void]$out.Add([pscustomobject]@{ Level = $Level; Title = $Title; Detail = $Detail }) }
 
     # Refresh rate: the most common free win
     try {
-        if ($script:NativeOk) {
+        if ($NativeOk) {
             $d = [RomNative]::DisplayInfo()
             if ($d[0] -gt 0) {
                 if ($d[1] -gt ($d[0] + 5)) {
@@ -1398,7 +1547,8 @@ function Restore-OrphanedSession {
     try {
         $j = Get-Content -LiteralPath $script:SessionFile -Raw | ConvertFrom-Json
         $n = 0
-        foreach ($s in @($j.Services)) { if ($s) { try { Start-Service -Name $s -ErrorAction Stop; $n++ } catch { } } }
+        $svcList = @($j.Services | Where-Object { $_ })
+        if ($svcList.Count -gt 0) { Start-ServicesFast $svcList; $n = $svcList.Count }
         Remove-Item -LiteralPath $script:SessionFile -Force -ErrorAction SilentlyContinue
         if ($n -gt 0) { Write-Log "Recovered from an interrupted session: restarted $n service(s)." 'warn' }
     } catch { Remove-Item -LiteralPath $script:SessionFile -Force -ErrorAction SilentlyContinue }
@@ -1417,15 +1567,15 @@ function Start-GameSession {
         $stopped = @()
         foreach ($n in $script:SessionSvcNames) {
             $svc = Get-Service -Name $n -ErrorAction SilentlyContinue
-            if ($svc -and $svc.Status -eq 'Running') {
-                try { Stop-Service -Name $n -Force -ErrorAction Stop; $stopped += $n } catch { }
-            }
+            if ($svc -and $svc.Status -eq 'Running') { $stopped += $n }
         }
         $script:Session.Stopped = $stopped
         Save-SessionState
+        Stop-ServicesFast $stopped
         Write-Log "Paused $($stopped.Count) background service(s) until the session ends." 'ok'
     }
     $script:Session.Prio  = [bool]$Opt.Priority
+    $script:Session.Pin   = [bool]$Opt.Pin
     $script:Session.Purge = [bool]$Opt.Purge
     $script:Session.Tick  = 0
 }
@@ -1434,10 +1584,12 @@ function Stop-GameSession {
     if (-not $script:Session.Active) { return }
     if ($script:Session.Timer -and $script:NativeOk) { [RomNative]::ReleaseTimer(); $script:Session.Timer = $false }
     $n = 0
-    foreach ($s in @($script:Session.Stopped)) { try { Start-Service -Name $s -ErrorAction Stop; $n++ } catch { } }
+    $n = @($script:Session.Stopped).Count
+    Start-ServicesFast @($script:Session.Stopped)
     $script:Session.Stopped = @()
     Remove-Item -LiteralPath $script:SessionFile -Force -ErrorAction SilentlyContinue
-    $script:Session.Active = $false; $script:Session.Prio = $false; $script:Session.Purge = $false
+    Reset-GameAffinity
+    $script:Session.Active = $false; $script:Session.Prio = $false; $script:Session.Purge = $false; $script:Session.Pin = $false
     Write-Log "Session ended. Timer released, $n service(s) restarted." 'accent'
 }
 
@@ -1447,7 +1599,7 @@ function Close-BackgroundApps {
     $procs = @()
     foreach ($n in $Names) { $procs += @(Get-Process -Name $n -ErrorAction SilentlyContinue) }
     foreach ($p in $procs) { try { $ram += $p.WorkingSet64; [void]$p.CloseMainWindow() } catch { } }
-    Start-Sleep -Milliseconds 1500
+    Wait-Ui 1500
     foreach ($p in $procs) {
         try { $p.Refresh(); if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction Stop }; $closed++ } catch { }
     }
@@ -1521,6 +1673,11 @@ function New-RestorePoint {
     } finally {
         if ($null -eq $old) { Remove-RegValue $key 'SystemRestorePointCreationFrequency' } else { Set-Reg $key 'SystemRestorePointCreationFrequency' $old }
     }
+}
+
+function New-RestorePointAsync {
+    # Checkpoint-Computer can take 10-30 seconds, so it runs in a worker while the window stays alive.
+    [void](Invoke-Blocking -TimeoutSec 240 -Functions 'New-RestorePoint', 'Get-RegValue', 'Set-Reg', 'Remove-RegValue' -Script { New-RestorePoint })
 }
 # ---- debloat -------------------------------------------------------------------
 # Safe = recommended removal for nearly everyone. Optional = real apps some people use.
@@ -1743,9 +1900,14 @@ function Set-TcpState {
     Set-NetOffloadGlobalSetting -ReceiveSideScaling $S.Rss -ReceiveSegmentCoalescing $S.Rsc -ErrorAction Stop
 }
 
+# Background-worker wrappers: the NetTCPIP cmdlets can take seconds, so they never run on the UI thread.
+function Get-TcpStateBg   { $x = @(Invoke-Blocking -Functions 'Get-TcpState' -Script { Get-TcpState })[0]; if ($x -is [System.Management.Automation.PSObject]) { $x = $x.BaseObject }; return $x }
+function Set-TcpStateBg   { param($S) [void](Invoke-Blocking -Functions 'Set-TcpState' -ArgList @(,$S) -Script { param($s) Set-TcpState $s }) }
+function Get-NetPrimaryBg { return @(Invoke-Blocking -Functions 'Get-NetPrimary' -Script { Get-NetPrimary })[0] }
+
 function Save-NetBaseline {
     if (Test-Path -LiteralPath $script:NetBaselineFile) { return }
-    $state = Get-TcpState
+    $state = Get-TcpStateBg
     Write-TextFile $script:NetBaselineFile (ConvertTo-Json -InputObject @{ At = (Get-Date).ToString('s'); State = $state } -Depth 4)
 }
 
@@ -1782,11 +1944,12 @@ function Test-PingStats {
     $times = New-Object System.Collections.Generic.List[double]
     for ($i = 0; $i -lt $Count; $i++) {
         try {
-            $r = $p.Send($Target, $Timeout)
+            $task = $p.SendPingAsync($Target, $Timeout)
+            while (-not $task.IsCompleted) { Invoke-UiPump; Start-Sleep -Milliseconds 8 }
+            $r = $task.Result
             if ($r.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $times.Add([double]$r.RoundtripTime) } else { $res.Lost++ }
         } catch { $res.Lost++ }
-        if ($Pump) { Invoke-UiPump }
-        Start-Sleep -Milliseconds 70
+        Wait-Ui 70
     }
     if ($times.Count -gt 0) {
         $res.Avg = [math]::Round(($times | Measure-Object -Average).Average, 1)
@@ -1810,7 +1973,11 @@ function Find-PathMtu {
     $try = {
         param([int]$size)
         $buf = New-Object byte[] $size
-        try { $r = $p.Send($Target, 1500, $buf, $opt); return ($r.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) } catch { return $false }
+        try {
+            $task = $p.SendPingAsync($Target, 1500, $buf, $opt)
+            while (-not $task.IsCompleted) { Invoke-UiPump; Start-Sleep -Milliseconds 8 }
+            return ($task.Result.Status -eq [System.Net.NetworkInformation.IPStatus]::Success)
+        } catch { return $false }
     }
     if (-not (& $try 32)) { return $null }
     if (& $try 1472) { return 1500 }
@@ -1844,22 +2011,22 @@ function Invoke-TcpProfile {
     param([string]$Profile, [bool]$Rollback = $true, [switch]$Pump)
     Save-NetBaseline
     $base = Get-NetBaseline
-    $cur  = Get-TcpState
+    $cur  = Get-TcpStateBg
     $target = Get-TcpTarget $Profile $base $cur
     $diff = @(Compare-TcpState $cur $target)
     $result = @{ Changes = $diff; RolledBack = $false; Pre = $null; Post = $null }
     if ($diff.Count -eq 0) { return $result }
-    $info = Get-NetPrimary
+    $info = Get-NetPrimaryBg
     $result.Pre = Test-PingStats '1.1.1.1' 6 1000 -Pump:$Pump
-    Set-TcpState $target
-    Start-Sleep -Milliseconds 800
+    Set-TcpStateBg $target
+    Wait-Ui 800
     $result.Post = Test-PingStats '1.1.1.1' 6 1000 -Pump:$Pump
     if ($Rollback) {
         $pre = $result.Pre; $post = $result.Post
         $broke = ($post.Lost -ge $post.Sent) -and ($pre.Lost -lt $pre.Sent)
         $lossier = ($post.Lost -gt ($pre.Lost + 1))
         $slower = ($pre.Avg -gt 0 -and $post.Avg -gt (($pre.Avg * 1.5) + 5))
-        if ($broke -or $lossier -or $slower) { Set-TcpState $cur; $result.RolledBack = $true }
+        if ($broke -or $lossier -or $slower) { Set-TcpStateBg $cur; $result.RolledBack = $true }
     }
     return $result
 }
@@ -1870,7 +2037,7 @@ function Export-OptProfile {
     $F = $script:Facts
     $applied = @()
     foreach ($id in $script:Cards.Keys) { if ($script:Cards[$id].Applied) { $applied += $id } }
-    $tcp = $null; try { $tcp = Get-TcpState } catch { }
+    $tcp = $null; try { $tcp = Get-TcpStateBg } catch { }
     $obj = @{
         Format = 1; App = 'Daqueece Optimizer'; Version = $script:Version; Exported = (Get-Date).ToString('s')
         Windows = $F.OsName; Build = $F.Build; Cpu = $F.CpuName; RamGB = $F.RamGB
@@ -1921,16 +2088,18 @@ $script:Xaml = @'
             <Border x:Name="bd" CornerRadius="8" Background="Transparent" Padding="12,8">
               <Grid>
                 <Rectangle x:Name="bar" Width="3" Height="16" RadiusX="1.5" RadiusY="1.5" Fill="{StaticResource Accent}" HorizontalAlignment="Left" Margin="-12,0,0,0" Visibility="Collapsed"/>
-                <ContentPresenter VerticalAlignment="Center"/>
+                <ContentPresenter VerticalAlignment="Center"><ContentPresenter.RenderTransform><TranslateTransform x:Name="nt" X="0"/></ContentPresenter.RenderTransform></ContentPresenter>
               </Grid>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True">
                 <Setter TargetName="bd" Property="Background" Value="{StaticResource Bg2}"/>
                 <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                <Trigger.EnterActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="nt" Storyboard.TargetProperty="X" To="5" Duration="0:0:0.14"><DoubleAnimation.EasingFunction><QuadraticEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction></DoubleAnimation></Storyboard></BeginStoryboard></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="nt" Storyboard.TargetProperty="X" To="0" Duration="0:0:0.18"/></Storyboard></BeginStoryboard></Trigger.ExitActions>
               </Trigger>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="bd" Property="Background" Value="{StaticResource Bg3}"/>
+                <Setter TargetName="bd" Property="Background" Value="Transparent"/>
                 <Setter TargetName="bar" Property="Visibility" Value="Visible"/>
                 <Setter Property="Foreground" Value="{StaticResource Text}"/>
               </Trigger>
@@ -2233,7 +2402,8 @@ $script:Xaml = @'
             </RadialGradientBrush>
           </Border.Background>
         </Border>
-        <Canvas x:Name="particles" IsHitTestVisible="False" ClipToBounds="True"/>
+        <Canvas x:Name="bokeh" IsHitTestVisible="False" ClipToBounds="True"><Canvas.RenderTransform><TranslateTransform x:Name="parBokeh" X="0" Y="0"/></Canvas.RenderTransform></Canvas>
+        <Canvas x:Name="particles" IsHitTestVisible="False" ClipToBounds="True"><Canvas.RenderTransform><TranslateTransform x:Name="parPart" X="0" Y="0"/></Canvas.RenderTransform></Canvas>
         <Ellipse x:Name="glow" Width="560" Height="560" IsHitTestVisible="False" Opacity="0.55" Margin="0,0,0,40" RenderTransformOrigin="0.5,0.5">
           <Ellipse.RenderTransform><ScaleTransform x:Name="glowScale" ScaleX="1" ScaleY="1"/></Ellipse.RenderTransform>
           <Ellipse.Fill>
@@ -2252,13 +2422,24 @@ $script:Xaml = @'
         <StackPanel x:Name="hero" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-10,0,0">
           <Grid x:Name="logoWrap" Width="96" Height="96" HorizontalAlignment="Center" Opacity="0" RenderTransformOrigin="0.5,0.5">
             <Grid.RenderTransform><ScaleTransform x:Name="logoScale" ScaleX="0.5" ScaleY="0.5"/></Grid.RenderTransform>
+            <Ellipse x:Name="ring2" Width="124" Height="124" Stroke="#33E8743B" StrokeThickness="1" StrokeDashArray="1 6" RenderTransformOrigin="0.5,0.5">
+              <Ellipse.RenderTransform><RotateTransform x:Name="ring2Rot" Angle="0"/></Ellipse.RenderTransform>
+            </Ellipse>
+            <Grid x:Name="orbit1" Width="114" Height="114" RenderTransformOrigin="0.5,0.5">
+              <Grid.RenderTransform><RotateTransform x:Name="orbit1Rot" Angle="0"/></Grid.RenderTransform>
+              <Ellipse Width="5" Height="5" Fill="{StaticResource AccentHi}" HorizontalAlignment="Center" VerticalAlignment="Top"/>
+            </Grid>
+            <Grid x:Name="orbit2" Width="136" Height="136" RenderTransformOrigin="0.5,0.5">
+              <Grid.RenderTransform><RotateTransform x:Name="orbit2Rot" Angle="0"/></Grid.RenderTransform>
+              <Ellipse Width="3.5" Height="3.5" Fill="#B8E8743B" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+            </Grid>
             <Ellipse x:Name="ring" Width="96" Height="96" Stroke="#66E8743B" StrokeThickness="1.4" StrokeDashArray="2.5 5" RenderTransformOrigin="0.5,0.5">
               <Ellipse.RenderTransform><RotateTransform x:Name="ringRot" Angle="0"/></Ellipse.RenderTransform>
             </Ellipse>
             <Border Width="68" Height="68" CornerRadius="18" BorderBrush="#55E8743B" BorderThickness="1" Background="#14E8743B">
               <Border.Effect><DropShadowEffect x:Name="logoFx" Color="#E8743B" BlurRadius="26" Opacity="0.35" ShadowDepth="0"/></Border.Effect>
               <Viewbox Width="30" Height="30">
-                <Path Data="M 15,1 L 3,17 L 11,17 L 9,29 L 23,11 L 14,11 Z" Fill="{StaticResource Accent}"/>
+                <Path x:Name="logoBolt" Data="M 15,1 L 3,17 L 11,17 L 9,29 L 23,11 L 14,11 Z" Fill="{StaticResource Accent}"/>
               </Viewbox>
             </Border>
           </Grid>
@@ -2266,7 +2447,8 @@ $script:Xaml = @'
           <TextBlock x:Name="lnTag" Opacity="0" Margin="0,26,0,0" HorizontalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource Dim}"/>
           <StackPanel x:Name="lnTitle" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0"/>
           <TextBlock x:Name="lnSub" Opacity="0" Margin="0,2,0,0" HorizontalAlignment="Center" FontFamily="Bahnschrift, Segoe UI Semibold" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource Accent}"/>
-          <TextBlock x:Name="lnLine" Opacity="0" Margin="0,24,0,0" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="500" FontSize="14" LineHeight="22" Foreground="{StaticResource Muted}"
+          <Rectangle x:Name="lnUnder" Width="0" Height="2" RadiusX="1" RadiusY="1" Fill="{StaticResource Accent}" HorizontalAlignment="Center" Margin="0,10,0,0" Opacity="0.85"/>
+          <TextBlock x:Name="lnLine" Opacity="0" Margin="0,16,0,0" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="500" FontSize="14" LineHeight="22" Foreground="{StaticResource Muted}"
                      Text="Higher FPS and tighter 1% lows: real Windows, scheduler and GPU tweaks, a full app debloat and a startup cleaner. Every change is journaled and fully reversible, and every toggle tells you what it is actually worth."/>
 
           <Button x:Name="btnEnter" Opacity="0" Style="{StaticResource Enter}" HorizontalAlignment="Center" Margin="0,36,0,0"/>
@@ -2313,7 +2495,10 @@ $script:Xaml = @'
               <Border Padding="12,10" Background="{StaticResource Bg2}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="10">
                 <StackPanel>
                   <StackPanel Orientation="Horizontal">
-                    <Ellipse x:Name="sideDot" Width="7" Height="7" Fill="{StaticResource Dim}" VerticalAlignment="Center"/>
+                    <Grid Width="7" Height="7" VerticalAlignment="Center">
+                      <Ellipse x:Name="sideRing" Width="7" Height="7" Stroke="{StaticResource Good}" StrokeThickness="1" Opacity="0" RenderTransformOrigin="0.5,0.5"><Ellipse.RenderTransform><ScaleTransform x:Name="sideRingS" ScaleX="1" ScaleY="1"/></Ellipse.RenderTransform></Ellipse>
+                      <Ellipse x:Name="sideDot" Width="7" Height="7" Fill="{StaticResource Dim}"/>
+                    </Grid>
                     <TextBlock x:Name="sideTitle" Text="No active session" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource Text}" Margin="8,0,0,0"/>
                   </StackPanel>
                   <TextBlock x:Name="sideSub" Margin="15,3,0,0" FontSize="11" Foreground="{StaticResource Dim}" TextWrapping="Wrap"/>
@@ -2321,7 +2506,11 @@ $script:Xaml = @'
               </Border>
             </StackPanel>
 
-            <StackPanel x:Name="navPanel" DockPanel.Dock="Top">
+            <Grid DockPanel.Dock="Top">
+            <Border x:Name="navHi" Background="#1B2028" CornerRadius="8" Height="36" VerticalAlignment="Top" Margin="10,0" Visibility="Collapsed">
+              <Border.RenderTransform><TranslateTransform x:Name="navHiT" Y="0"/></Border.RenderTransform>
+            </Border>
+            <StackPanel x:Name="navPanel">
               <RadioButton x:Name="navDash" Style="{StaticResource Nav}" GroupName="N" IsChecked="True">
                 <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE80F;"/><TextBlock Text="Dashboard"/></StackPanel></RadioButton>
               <RadioButton x:Name="navOpt" Style="{StaticResource Nav}" GroupName="N">
@@ -2343,6 +2532,7 @@ $script:Xaml = @'
               <RadioButton x:Name="navLog" Style="{StaticResource Nav}" GroupName="N">
                 <StackPanel Orientation="Horizontal"><TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Width="28" Text="&#xE8A5;"/><TextBlock Text="Activity log"/></StackPanel></RadioButton>
             </StackPanel>
+            </Grid>
           </DockPanel>
         </Border>
 
@@ -2363,6 +2553,7 @@ $script:Xaml = @'
               <StackPanel VerticalAlignment="Center">
                 <TextBlock x:Name="pageTitle" FontSize="22" FontWeight="Bold" Foreground="{StaticResource Text}"/>
                 <TextBlock x:Name="pageSub" FontSize="12.5" Foreground="{StaticResource Muted}" Margin="0,3,0,0"/>
+                <Rectangle x:Name="hdrBar" Width="0" Height="2" RadiusX="1" RadiusY="1" Fill="{StaticResource Accent}" HorizontalAlignment="Left" Margin="0,7,0,0"/>
               </StackPanel>
             </DockPanel>
           </Border>
@@ -2534,6 +2725,7 @@ $script:Xaml = @'
                     <CheckBox x:Name="sesTimer" Style="{StaticResource Switch}" Content="Hold the finest system timer (usually 0.5 ms)" IsChecked="True" Margin="0,5"/>
                     <CheckBox x:Name="sesPurge" Style="{StaticResource Switch}" Content="Smart standby-memory cleaner (only when free memory runs low)" IsChecked="True" Margin="0,5"/>
                     <CheckBox x:Name="sesPrio" Style="{StaticResource Switch}" Content="Raise the game to Above Normal priority when it starts" IsChecked="True" Margin="0,5"/>
+                    <CheckBox x:Name="sesPin" Style="{StaticResource Switch}" Content="Pin the game to the V-Cache cores (dual-CCD X3D only)" IsChecked="True" Margin="0,5" Visibility="Collapsed"/>
                     <CheckBox x:Name="sesSvc" Style="{StaticResource Switch}" Content="Pause background services (search indexing, Windows Update, telemetry, SysMain)" Margin="0,5"/>
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                       <TextBlock Text="Game process" FontSize="12.5" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,12,0"/>
@@ -2802,6 +2994,15 @@ $script:Xaml = @'
           </Border>
         </Grid>
       </Grid>
+
+      <Border x:Name="toast" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,26,54" Visibility="Collapsed" IsHitTestVisible="False" Background="#1B2028" BorderBrush="#E8743B" BorderThickness="1" CornerRadius="10" MinWidth="240" MaxWidth="380">
+        <Border.RenderTransform><TranslateTransform x:Name="toastT" X="440"/></Border.RenderTransform>
+        <Border.Effect><DropShadowEffect Color="#000000" BlurRadius="18" Opacity="0.5" ShadowDepth="4"/></Border.Effect>
+        <StackPanel>
+          <TextBlock x:Name="toastText" Margin="16,12,16,10" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource Text}" TextWrapping="Wrap"/>
+          <Rectangle x:Name="toastBar" Height="2" Fill="{StaticResource Accent}" HorizontalAlignment="Left" Width="240"/>
+        </StackPanel>
+      </Border>
     </Grid>
   </Border>
 </Window>
@@ -2873,10 +3074,11 @@ function Start-Pop {
 }
 
 function Start-Forever {
-    param($Target, $Prop, [double]$From, [double]$To, [double]$Sec, [bool]$Reverse = $true, [string]$Kind = 'Sine')
+    param($Target, $Prop, [double]$From, [double]$To, [double]$Sec, [bool]$Reverse = $true, [string]$Kind = 'Sine', [int]$Delay = 0)
     if (-not $script:AnimOn -or -not $Target) { return }
     $a = New-DAnim $From $To ($Sec * 1000)
     $a.AutoReverse = $Reverse
+    if ($Delay -gt 0) { $a.BeginTime = Get-Span $Delay }
     $a.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
     if ($Reverse) { $a.EasingFunction = New-Ease $Kind 'EaseInOut' }
     $Target.BeginAnimation($Prop, $a)
@@ -2946,6 +3148,9 @@ function Add-CardHover {
 function Update-ApplyGlow {
     $btn = $script:UI.btnOptApply
     if (-not $btn) { return }
+    $n = $script:Sel.Count
+    $label = if ($n -gt 0) { "Apply selected ($n)" } else { 'Apply selected' }
+    if ($btn.Content -ne $label) { $btn.Content = $label; if ($n -gt 0) { Start-Pop $btn 0 0.94 220 } }
     if ($script:Sel.Count -gt 0 -and $script:AnimOn) {
         if (-not $btn.Effect) {
             $fx = New-Object Windows.Media.Effects.DropShadowEffect
@@ -2961,8 +3166,19 @@ function Set-Ambient {
     # slow background pulses in the app shell
     $ui = $script:UI
     $blur = [Windows.Media.Effects.DropShadowEffect]::BlurRadiusProperty
-    if ($script:AnimOn) { Start-Forever $ui.sideFx $blur 6 18 2.8 $true }
-    else { Stop-Anim $ui.sideFx $blur }
+    if ($script:AnimOn) {
+        Start-Forever $ui.sideFx $blur 6 18 2.8 $true
+        if (-not $ui.btnOptimizeAll.Effect) {
+            $fx = New-Object Windows.Media.Effects.DropShadowEffect
+            $fx.Color = [Windows.Media.ColorConverter]::ConvertFromString('#E8743B')
+            $fx.ShadowDepth = 0; $fx.Opacity = 0.7; $fx.BlurRadius = 6
+            $ui.btnOptimizeAll.Effect = $fx
+            Start-Forever $fx $blur 6 26 1.7 $true
+        }
+    } else {
+        Stop-Anim $ui.sideFx $blur
+        $ui.btnOptimizeAll.Effect = $null
+    }
 }
 
 function Start-Particles {
@@ -3075,6 +3291,7 @@ function Set-DbBusy {
     param([bool]$Busy)
     foreach ($b in $script:DbButtons) { $script:UI[$b].IsEnabled = -not $Busy }
     $script:DbCtx.Busy = $Busy
+    $script:UI.navPanel.IsEnabled = -not $Busy
     Set-Spinner $Busy
 }
 
@@ -3134,7 +3351,7 @@ function Start-DebloatRemove {
     $ans = [Windows.MessageBox]::Show($msg, 'Daqueece Optimizer', 'YesNo', 'Warning')
     if ($ans -ne 'Yes') { return }
     Set-DbBusy $true
-    try { Write-Log 'Creating a restore point...' 'info'; Invoke-UiPump; New-RestorePoint; Write-Log 'Restore point created.' 'ok' }
+    try { Write-Log 'Creating a restore point...' 'info'; Invoke-UiPump; New-RestorePointAsync; Write-Log 'Restore point created.' 'ok' }
     catch { Write-Log "No restore point made: $($_.Exception.Message)" 'warn' }
     $items = @($sel | ForEach-Object { @{ Id = $_.Item.Id; Patterns = @($_.Item.Patterns); Special = $_.Item.Special } })
     $script:DbCtx.Count = $items.Count; $script:DbCtx.Done = 0; $script:DbCtx.Removed = 0; $script:DbCtx.Failed = 0
@@ -3146,7 +3363,7 @@ function Start-DebloatRemove {
         $r = $script:DbRows[$it.Id]
         if ($it.Kind -eq 'start') { $r.Status.Text = 'Removing...'; $r.Status.Foreground = Get-Res 'Warn'; return }
         $ctx.Done++
-        if ($it.Removed -gt 0) { $ctx.Removed++; $r.Status.Text = 'Removed'; $r.Status.Foreground = Get-Res 'Good'; $r.Installed = $false; Start-Pop $r.Status 0 0.7 300 }
+        if ($it.Removed -gt 0) { $ctx.Removed++; $r.Status.Text = 'Removed'; $r.Status.Foreground = Get-Res 'Good'; $r.Installed = $false; Start-Pop $r.Status 0 0.7 300; Start-SlideOut $r.Card }
         elseif ($it.Err) { $ctx.Failed++; $r.Status.Text = 'Failed'; $r.Status.Foreground = Get-Res 'Bad'; $r.Status.ToolTip = [string]$it.Err }
         else { $r.Status.Text = 'Not found'; $r.Status.Foreground = Get-Res 'Dim'; $r.Installed = $false }
         $r.Switch.IsChecked = $false
@@ -3162,6 +3379,7 @@ function Start-DebloatRemove {
         $script:UI.barDb.Value = 100
         $script:UI.txtDbStatus.Text = "Done. Removed $($ctx.Removed) item(s), $($ctx.Failed) failed."
         Write-Log "Debloat finished: $($ctx.Removed) removed, $($ctx.Failed) failed." $(if ($ctx.Failed -gt 0) { 'warn' } else { 'ok' })
+        Show-Toast "Removed $($ctx.Removed) app(s)$(if ($ctx.Failed -gt 0) { ", $($ctx.Failed) failed" })" $(if ($ctx.Failed -gt 0) { 'warn' } else { 'ok' })
     }
 }
 
@@ -3193,7 +3411,7 @@ function Build-StartupPage {
         $sw.IsChecked = [bool]$it.Enabled
         $sw.VerticalAlignment = 'Center'
         $sw.Margin = '0,0,14,0'
-        $sw.Add_Click({ param($s, $e) Invoke-Safe { Set-StartupItem ([int]$s.Tag) ([bool]$s.IsChecked) } 'Startup toggle' })
+        $sw.Add_Click({ param($s, $e) Invoke-Safe { Set-StartupItem ([int]$s.Tag) ([bool]$s.IsChecked) } 'Startup toggle'; Start-Flash $s.Parent.Parent })
         [void]$g.Children.Add($sw)
         $mid = New-Object Windows.Controls.StackPanel
         $head = New-Object Windows.Controls.WrapPanel
@@ -3222,6 +3440,365 @@ function Set-StartupItem {
     $it.Enabled = $On
     Write-Log ("Startup: {0} {1}." -f $it.Name, $(if ($On) { 'will launch at sign-in' } else { 'will no longer launch at sign-in' })) $(if ($On) { 'info' } else { 'accent' })
 }
+# ---- animation catalog -------------------------------------------------------------------------
+# Every entry below is implemented in code. The Animations switch in the sidebar turns them all off.
+$script:AnimCatalog = @(
+    # landing page
+    'Window fade-in', 'Window settle zoom', 'Background gradient drift', 'Glow breathing', 'Glow swell', 'Logo fade-in', 'Logo spring pop',
+    'Ring rotation', 'Counter-rotating dotted ring', 'Orbiting dot (inner)', 'Orbiting dot (outer, reverse)', 'Logo glow pulse', 'Bolt flicker',
+    'Tagline rise', 'Title letter cascade', 'Title letter hover lift', 'Title letter hover color flash', 'Subtitle rise', 'Subtitle underline grow',
+    'Paragraph rise', 'Enter button fade-in', 'Enter button spring pop', 'Enter button light sweep', 'Enter button idle glow pulse',
+    'Enter button arrow nudge', 'Enter button hover glow and grow', 'Chips staggered rise', 'Chips gentle bob', 'Footer fade-in',
+    'Window controls fade-in', 'Floating particles', 'Bokeh drift', 'Parallax on mouse move', 'Click ripple', 'Landing exit fade', 'Landing exit zoom',
+    # app shell
+    'App slide-in', 'Nav staggered slide-in', 'Nav sliding highlight', 'Nav hover nudge', 'Nav icon pop', 'Sidebar logo spring pop',
+    'Sidebar logo glow pulse', 'Animations switch fade-in', 'Page fade and slide', 'Page title rise', 'Page subtitle rise', 'Header accent bar grow',
+    # dashboard
+    'Dashboard cards staggered rise', 'Dashboard card hover lift', 'Applied count-up', 'Progress bar fill', 'Findings staggered rise',
+    'Finding row hover glow', 'Warning dot pulse', 'Optimize-all button glow pulse', 'Change summary reveal', 'Change list stagger',
+    # lists and controls
+    'List stagger (optimize, debloat, startup, cleaner, internet)', 'Switch knob slide with overshoot', 'Switch track color fade', 'Button hover fade',
+    'Button press squash', 'Card hover border glow', 'Status pill pop', 'Tier filter chip pop', 'Search box focus expand', 'Apply button glow pulse',
+    'Apply count pop', 'Reboot banner drop-in', 'Reboot banner pulse', 'Busy spinner', 'Busy progress bar pulse', 'Cleaner result pop',
+    'Removed app slide-out', 'Removed status pop', 'Startup toggle flash', 'Network result pop', 'Network test button pulse', 'TCP status pop',
+    # feedback and chrome
+    'Toast slide-in', 'Toast timer bar', 'Toast slide-out', 'Log row fade-in', 'Status text fade', 'Session dot pulse', 'Session ring ping',
+    'Sidebar status title pop', 'Window drag dim', 'Window close fade', 'Window close shrink'
+)
+
+# ---- small helpers ---------------------------------------------------------------------------------
+$script:EnterArrowT = $null
+$script:Ready = $false
+$script:Prepared = $false
+$script:CloseNow = $false
+$script:DeferFindings = $false
+$script:FindingsBusy = $false
+$script:ParLast = 0
+$script:Ripples = New-Object System.Collections.Queue
+
+function Get-Color { param([string]$Hex) return [Windows.Media.ColorConverter]::ConvertFromString($Hex) }
+
+function Set-EnterContent {
+    param([string]$Text, [bool]$Arrow = $true)
+    $sp = New-Object Windows.Controls.StackPanel
+    $sp.Orientation = 'Horizontal'
+    $tb = New-Object Windows.Controls.TextBlock
+    $tb.Text = $Text
+    $tb.FontSize = 14
+    $tb.FontWeight = 'Bold'
+    $tb.Foreground = Get-Brush '#160E09'
+    [void]$sp.Children.Add($tb)
+    $script:EnterArrowT = $null
+    if ($Arrow) {
+        $ar = New-Object Windows.Controls.TextBlock
+        $ar.Text = [string][char]0x2192
+        $ar.FontSize = 15
+        $ar.FontWeight = 'Bold'
+        $ar.Foreground = Get-Brush '#160E09'
+        $ar.Margin = '12,0,0,0'
+        $t = New-Object Windows.Media.TranslateTransform
+        $ar.RenderTransform = $t
+        $script:EnterArrowT = $t
+        [void]$sp.Children.Add($ar)
+        if ($script:AnimOn) { Start-Forever $t ([Windows.Media.TranslateTransform]::XProperty) 0 7 0.6 $true }
+    }
+    $script:UI.btnEnter.Content = $sp
+}
+
+function Set-LandingSys {
+    $F = $script:Facts
+    $dot = [string][char]0x00B7
+    $script:UI.lnSys.Text = ("{0}   {1}   {2} GB RAM   {1}   v{3}" -f $F.CpuName, $dot, $F.RamGB, $script:Version)
+}
+
+function Move-NavHighlight {
+    param($Item, [switch]$Instant)
+    $ui = $script:UI
+    if (-not $Item -or -not $ui.navHi) { return }
+    try {
+        $ui.navPanel.UpdateLayout()
+        $pt = $Item.TransformToAncestor($ui.navPanel).Transform((New-Object Windows.Point -ArgumentList 0, 0))
+        $ui.navHi.Visibility = 'Visible'
+        $ui.navHi.Height = [double]$Item.ActualHeight
+        $y = [Windows.Media.TranslateTransform]::YProperty
+        if ($script:AnimOn -and -not $Instant) { $ui.navHiT.BeginAnimation($y, (New-DAnim $ui.navHiT.Y $pt.Y 300 0 (New-Ease 'Back' 'EaseOut'))) }
+        else { $ui.navHiT.BeginAnimation($y, $null); $ui.navHiT.Y = $pt.Y }
+    } catch { }
+}
+
+function Set-HeaderBar {
+    $b = $script:UI.hdrBar
+    if (-not $b) { return }
+    $w = [Windows.FrameworkElement]::WidthProperty
+    if ($script:AnimOn) { $b.BeginAnimation($w, (New-DAnim 0 44 420 80 (New-Ease 'Cubic' 'EaseOut'))) }
+    else { $b.BeginAnimation($w, $null); $b.Width = 44 }
+}
+
+function Set-SessionRing {
+    param([bool]$On)
+    $ui = $script:UI
+    if (-not $ui.sideRing) { return }
+    $sx = [Windows.Media.ScaleTransform]::ScaleXProperty; $sy = [Windows.Media.ScaleTransform]::ScaleYProperty; $op = [Windows.UIElement]::OpacityProperty
+    if ($On -and $script:AnimOn) {
+        Start-Forever $ui.sideRingS $sx 1 3.4 1.5 $false
+        Start-Forever $ui.sideRingS $sy 1 3.4 1.5 $false
+        Start-Forever $ui.sideRing $op 0.9 0 1.5 $false
+    } else {
+        Stop-Anim $ui.sideRingS $sx; Stop-Anim $ui.sideRingS $sy; Stop-Anim $ui.sideRing $op
+        $ui.sideRing.Opacity = 0
+    }
+}
+
+function Add-CardLift {
+    param($El)
+    if (-not $El) { return }
+    $El.Add_MouseEnter({ param($s, $e)
+        if (-not $script:AnimOn) { return }
+        if ($s.RenderTransform -isnot [Windows.Media.TranslateTransform]) { $s.RenderTransform = New-Object Windows.Media.TranslateTransform }
+        $s.RenderTransform.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, (New-DAnim $s.RenderTransform.Y -3 150 0 (New-Ease)))
+    })
+    $El.Add_MouseLeave({ param($s, $e)
+        if (-not $script:AnimOn) { return }
+        if ($s.RenderTransform -is [Windows.Media.TranslateTransform]) { $s.RenderTransform.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, (New-DAnim $s.RenderTransform.Y 0 220 0 (New-Ease))) }
+    })
+}
+
+function Start-Flash {
+    param($Card)
+    if (-not $Card -or -not $script:AnimOn -or $Card.BorderBrush -isnot [Windows.Media.SolidColorBrush]) { return }
+    $ca = New-Object Windows.Media.Animation.ColorAnimation
+    $ca.To = Get-Color '#E8743B'; $ca.Duration = Get-Dur 200; $ca.AutoReverse = $true
+    try { $Card.BorderBrush.BeginAnimation([Windows.Media.SolidColorBrush]::ColorProperty, $ca) } catch { }
+}
+
+function Start-SlideOut {
+    param($El)
+    if (-not $El) { return }
+    if (-not $script:AnimOn) { return }
+    $tt = New-Object Windows.Media.TranslateTransform
+    $El.RenderTransform = $tt
+    $tt.BeginAnimation([Windows.Media.TranslateTransform]::XProperty, (New-DAnim 0 36 280 0 (New-Ease 'Quad' 'EaseIn')))
+    $El.BeginAnimation([Windows.UIElement]::OpacityProperty, (New-DAnim 1 0.4 280))
+}
+
+# ---- toast notifications ----------------------------------------------------------------------------
+$script:ToastTimer = $null
+
+function Hide-Toast {
+    $ui = $script:UI
+    if (-not $ui.toast) { return }
+    if ($script:AnimOn) {
+        $a = New-DAnim $ui.toastT.X 440 260 0 (New-Ease 'Quad' 'EaseIn')
+        $a.Add_Completed({ $script:UI.toast.Visibility = 'Collapsed' })
+        $ui.toastT.BeginAnimation([Windows.Media.TranslateTransform]::XProperty, $a)
+    } else { $ui.toast.Visibility = 'Collapsed' }
+}
+
+function Show-Toast {
+    param([string]$Text, [string]$Kind = 'ok')
+    $ui = $script:UI
+    if (-not $ui.toast) { return }
+    $hex = switch ($Kind) { 'ok' { '#3FB950' } 'err' { '#E5534B' } 'warn' { '#D9A23A' } default { '#E8743B' } }
+    $ui.toast.BorderBrush = Get-Brush $hex
+    $ui.toastBar.Fill = Get-Brush $hex
+    $ui.toastText.Text = $Text
+    $ui.toast.Visibility = 'Visible'
+    $x = [Windows.Media.TranslateTransform]::XProperty
+    if ($script:AnimOn) {
+        $ui.toastT.BeginAnimation($x, (New-DAnim 440 0 380 0 (New-Ease 'Back' 'EaseOut')))
+        $ui.toastBar.BeginAnimation([Windows.FrameworkElement]::WidthProperty, (New-DAnim 240 0 3400 300))
+    } else {
+        $ui.toastT.BeginAnimation($x, $null); $ui.toastT.X = 0
+        $ui.toastBar.BeginAnimation([Windows.FrameworkElement]::WidthProperty, $null); $ui.toastBar.Width = 240
+    }
+    if ($script:ToastTimer) { $script:ToastTimer.Stop() }
+    $script:ToastTimer = New-Object Windows.Threading.DispatcherTimer
+    $script:ToastTimer.Interval = [TimeSpan]::FromMilliseconds(3800)
+    $script:ToastTimer.Add_Tick({ $script:ToastTimer.Stop(); Hide-Toast })
+    $script:ToastTimer.Start()
+}
+
+# ---- landing extras ----------------------------------------------------------------------------------
+function Start-Bokeh {
+    $ui = $script:UI
+    $c = $ui.bokeh
+    $c.Children.Clear()
+    if (-not $script:AnimOn) { return }
+    $w = $ui.landing.ActualWidth; if ($w -lt 200) { $w = 1100 }
+    $h = $ui.landing.ActualHeight; if ($h -lt 200) { $h = 720 }
+    $rnd = New-Object System.Random
+    for ($i = 0; $i -lt 6; $i++) {
+        $size = 130 + $rnd.NextDouble() * 130
+        $e = New-Object Windows.Shapes.Ellipse
+        $e.Width = $size; $e.Height = $size
+        $rg = New-Object Windows.Media.RadialGradientBrush
+        [void]$rg.GradientStops.Add((New-Object Windows.Media.GradientStop -ArgumentList (Get-Color '#26E8743B'), 0.0))
+        [void]$rg.GradientStops.Add((New-Object Windows.Media.GradientStop -ArgumentList (Get-Color '#00E8743B'), 1.0))
+        $e.Fill = $rg
+        [Windows.Controls.Canvas]::SetLeft($e, $rnd.NextDouble() * $w)
+        [Windows.Controls.Canvas]::SetTop($e, $rnd.NextDouble() * $h)
+        $tt = New-Object Windows.Media.TranslateTransform
+        $e.RenderTransform = $tt
+        [void]$c.Children.Add($e)
+        Start-Forever $tt ([Windows.Media.TranslateTransform]::XProperty) (-30 - $rnd.NextDouble() * 50) (30 + $rnd.NextDouble() * 50) (9 + $rnd.NextDouble() * 8) $true 'Sine' ([int]($rnd.NextDouble() * 2000))
+        Start-Forever $tt ([Windows.Media.TranslateTransform]::YProperty) (-24 - $rnd.NextDouble() * 40) (24 + $rnd.NextDouble() * 40) (11 + $rnd.NextDouble() * 8) $true 'Sine' ([int]($rnd.NextDouble() * 2000))
+        Start-Forever $e ([Windows.UIElement]::OpacityProperty) 0.35 1 (5 + $rnd.NextDouble() * 4) $true 'Sine'
+    }
+}
+
+function Start-Ripple {
+    param($Pos)
+    if (-not $script:AnimOn) { return }
+    $c = $script:UI.particles
+    $e = New-Object Windows.Shapes.Ellipse
+    $e.Width = 40; $e.Height = 40
+    $e.Stroke = Get-Brush '#E8743B'
+    $e.StrokeThickness = 1.5
+    $e.Opacity = 0.7
+    $e.IsHitTestVisible = $false
+    $e.RenderTransformOrigin = New-Object Windows.Point -ArgumentList 0.5, 0.5
+    [Windows.Controls.Canvas]::SetLeft($e, $Pos.X - 20)
+    [Windows.Controls.Canvas]::SetTop($e, $Pos.Y - 20)
+    $st = New-Object Windows.Media.ScaleTransform
+    $st.ScaleX = 0.2; $st.ScaleY = 0.2
+    $e.RenderTransform = $st
+    [void]$c.Children.Add($e)
+    $ease = New-Ease 'Cubic' 'EaseOut'
+    $st.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, (New-DAnim 0.2 4 750 0 $ease))
+    $st.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty, (New-DAnim 0.2 4 750 0 $ease))
+    $e.BeginAnimation([Windows.UIElement]::OpacityProperty, (New-DAnim 0.7 0 750))
+    $script:Ripples.Enqueue($e)
+    while ($script:Ripples.Count -gt 6) { $old = $script:Ripples.Dequeue(); $c.Children.Remove($old) }
+}
+
+function Invoke-Parallax {
+    param($Pos)
+    if (-not $script:AnimOn) { return }
+    $now = [Environment]::TickCount
+    if (($now - $script:ParLast) -lt 40) { return }
+    $script:ParLast = $now
+    $ui = $script:UI
+    $w = [math]::Max(1.0, $ui.landing.ActualWidth); $h = [math]::Max(1.0, $ui.landing.ActualHeight)
+    $nx = ($Pos.X / $w) - 0.5; $ny = ($Pos.Y / $h) - 0.5
+    $xp = [Windows.Media.TranslateTransform]::XProperty; $yp = [Windows.Media.TranslateTransform]::YProperty
+    $ui.parBokeh.BeginAnimation($xp, (New-DAnim $ui.parBokeh.X (-$nx * 36) 280))
+    $ui.parBokeh.BeginAnimation($yp, (New-DAnim $ui.parBokeh.Y (-$ny * 26) 280))
+    $ui.parPart.BeginAnimation($xp, (New-DAnim $ui.parPart.X (-$nx * 16) 280))
+    $ui.parPart.BeginAnimation($yp, (New-DAnim $ui.parPart.Y (-$ny * 12) 280))
+}
+
+function Start-LandingAmbient {
+    $ui = $script:UI
+    if (-not $script:AnimOn) { $ui.lnUnder.Width = 120; return }
+    $ang = [Windows.Media.RotateTransform]::AngleProperty
+    Start-Forever $ui.orbit1Rot $ang 0 360 6 $false
+    Start-Forever $ui.orbit2Rot $ang 360 0 9.5 $false
+    Start-Forever $ui.ring2Rot $ang 360 0 34 $false
+    # the bolt flickers every few seconds
+    $ka = New-Object Windows.Media.Animation.DoubleAnimationUsingKeyFrames
+    $ka.Duration = Get-Dur 5200
+    $ka.BeginTime = Get-Span 3000
+    $ka.RepeatBehavior = [Windows.Media.Animation.RepeatBehavior]::Forever
+    foreach ($kf in @(@(1, 0), @(1, 0.7), @(0.3, 0.75), @(1, 0.81), @(0.6, 0.88), @(1, 0.95), @(1, 1))) {
+        $f = New-Object Windows.Media.Animation.LinearDoubleKeyFrame
+        $f.Value = [double]$kf[0]
+        $f.KeyTime = [Windows.Media.Animation.KeyTime]::FromPercent([double]$kf[1])
+        [void]$ka.KeyFrames.Add($f)
+    }
+    $ui.logoBolt.BeginAnimation([Windows.UIElement]::OpacityProperty, $ka)
+    # the enter button breathes
+    $fx = New-Object Windows.Media.Effects.DropShadowEffect
+    $fx.Color = Get-Color '#E8743B'; $fx.ShadowDepth = 0; $fx.Opacity = 0.55; $fx.BlurRadius = 8
+    $ui.btnEnter.Effect = $fx
+    Start-Forever $fx ([Windows.Media.Effects.DropShadowEffect]::BlurRadiusProperty) 8 36 1.8 $true
+    # chips bob gently, out of step with each other
+    $i = 0
+    foreach ($chip in @($ui.chipA, $ui.chipB, $ui.chipC)) {
+        if ($chip.RenderTransform -is [Windows.Media.TranslateTransform]) { Start-Forever $chip.RenderTransform ([Windows.Media.TranslateTransform]::YProperty) 0 -4 (2.2 + $i * 0.35) $true 'Sine' 2700 }
+        $i++
+    }
+    $ui.lnUnder.BeginAnimation([Windows.FrameworkElement]::WidthProperty, (New-DAnim 0 120 700 1550 (New-Ease 'Cubic' 'EaseOut')))
+    Start-Bokeh
+}
+
+# ---- X3D pinning (dual-CCD V-Cache chips) --------------------------------------------------------------
+function Set-VCacheAffinity {
+    param($Proc)
+    $F = $script:Facts
+    if (-not $F.DualCcdX3D -or $F.Threads -lt 4) { return }
+    $half = [int]($F.Threads / 2)
+    $mask = [int64]([math]::Pow(2, $half) - 1)
+    try {
+        if ([int64]$Proc.ProcessorAffinity -ne $mask) {
+            $Proc.ProcessorAffinity = [IntPtr]$mask
+            $script:Session.PinnedPid = $Proc.Id
+            Write-Log ("{0} pinned to the first CCD ({1} logical cores, the V-Cache side)." -f $Proc.ProcessName, $half) 'ok'
+        }
+    } catch { Write-Log "Could not pin the game: $($_.Exception.Message)" 'warn' }
+}
+
+function Reset-GameAffinity {
+    $F = $script:Facts
+    if (-not $script:Session.PinnedPid) { return }
+    try {
+        $p = Get-Process -Id $script:Session.PinnedPid -ErrorAction Stop
+        $all = [int64]([math]::Pow(2, [math]::Min(62, [int]$F.Threads)) - 1)
+        $p.ProcessorAffinity = [IntPtr]$all
+    } catch { }
+    $script:Session.PinnedPid = $null
+}
+
+# ---- non-blocking startup --------------------------------------------------------------------------------
+function Start-Prepare {
+    # The window is already on screen. The hardware scan runs in a worker so nothing freezes.
+    $ui = $script:UI
+    Set-EnterContent 'Preparing...' $false
+    $ui.btnEnter.IsEnabled = $false
+    $work = "function Find-RustClient {`n" + (Get-Item -LiteralPath 'function:Find-RustClient').ScriptBlock.ToString() + "`n}`nfunction Get-SystemFacts {`n" + (Get-Item -LiteralPath 'function:Get-SystemFacts').ScriptBlock.ToString() + "`n}`nGet-SystemFacts"
+    Invoke-Async -Work ([scriptblock]::Create($work)) -OnDone {
+        param($res, $err)
+        $f = $null
+        try { $f = @($res)[0]; if ($f -is [System.Management.Automation.PSObject]) { $f = $f.BaseObject } } catch { }
+        if ($f -isnot [hashtable]) {
+            try { $f = Get-SystemFacts } catch { $f = @{ Build = [Environment]::OSVersion.Version.Build; Win11 = $false; OsName = 'Windows'; RamGB = 0; CpuName = 'Unknown CPU'; Cores = 0; Threads = 0; X3D = $false; DualCcdX3D = $false; Gpus = @(); Laptop = $false; RustExe = $null; RustHdd = $false } }
+        }
+        $script:Facts = $f
+        try { Restore-OrphanedSession } catch { }
+        Import-Journal
+        $script:Tweaks = Get-TweakCatalog
+        $script:Ready = $true
+        Set-LandingSys
+        Set-EnterContent 'ENTER OPTIMIZER' $true
+        $script:UI.btnEnter.IsEnabled = $true
+        if ($script:Facts.DualCcdX3D) { $script:UI.sesPin.Visibility = 'Visible' }
+        Write-Log "Daqueece Optimizer $($script:Version) ready on $($script:Facts.OsName)." 'accent'
+    }
+}
+
+function Start-CloseAnim {
+    $ui = $script:UI
+    $a = New-DAnim 1 0 220 0 (New-Ease 'Quad' 'EaseIn')
+    $a.Add_Completed({ $script:UI.Win.Close() })
+    $fs = New-Object Windows.Media.ScaleTransform
+    $ui.frame.RenderTransformOrigin = New-Object Windows.Point -ArgumentList 0.5, 0.5
+    $ui.frame.RenderTransform = $fs
+    $fs.BeginAnimation([Windows.Media.ScaleTransform]::ScaleXProperty, (New-DAnim 1 0.97 220))
+    $fs.BeginAnimation([Windows.Media.ScaleTransform]::ScaleYProperty, (New-DAnim 1 0.97 220))
+    $ui.Win.BeginAnimation([Windows.UIElement]::OpacityProperty, $a)
+}
+
+function Invoke-WindowDrag {
+    $w = $script:UI.Win
+    $op = [Windows.UIElement]::OpacityProperty
+    if ($script:AnimOn) { $w.BeginAnimation($op, (New-DAnim $w.Opacity 0.92 120)) }
+    try { $w.DragMove() } catch { }
+    if ($script:AnimOn) {
+        $a = New-DAnim 0.92 1 220
+        $a.FillBehavior = 'Stop'
+        $w.Opacity = 1
+        $w.BeginAnimation($op, $a)
+    } else { $w.Opacity = 1 }
+}
 # ---- settings (persisted between launches) ------------------------------------------------
 $script:SettingsFile = Join-Path $script:AppDir 'settings.json'
 
@@ -3245,7 +3822,7 @@ function Save-Settings {
 # Test      helps some PCs and hurts others, always opt-in, measure it
 # Advanced  real security or stability tradeoff, always opt-in
 # Optional  preferences and situational tweaks
-$script:TestTierIds = @('sch_hags', 'gpu_fsegl', 'gpu_fso', 'gpu_mpo', 'sch_memcomp', 'sch_tick', 'gpu_tdr')
+$script:TestTierIds = @('sch_hags', 'gpu_fsegl', 'gpu_fso', 'gpu_mpo', 'sch_memcomp', 'sch_tick', 'gpu_tdr', 'net_lat')
 
 function Get-TweakTier {
     param($T)
@@ -3320,6 +3897,7 @@ function Show-ChangeSummary {
     }
     foreach ($t in $fail) { [void]$ui.pnlChanges.Children.Add((New-Tb ("!  " + $t.Name + " (failed)") 12.5 'Bad')) }
     Start-FadeSlide $ui.dChanges 0 12 0 360
+    Show-Toast $ui.dChangesTitle.Text $(if ($fail.Count -gt 0) { 'warn' } else { 'ok' })
     Start-Stagger $ui.pnlChanges 24 24 120 6
 }
 
@@ -3356,7 +3934,7 @@ function Set-Tb {
 
 function Update-NetPage {
     $ui = $script:UI
-    $info = Get-NetPrimary
+    $info = Get-NetPrimaryBg
     if ($info) {
         Set-Tb $ui.nAdapter $info.Desc
         Set-Tb $ui.nType $info.Type
@@ -3369,7 +3947,7 @@ function Update-NetPage {
         foreach ($n in 'nAdapter', 'nType', 'nSpeed', 'nIp', 'nGw', 'nDnsSrv', 'nMtu') { Set-Tb $ui[$n] 'No active connection' 'Dim' }
     }
     try {
-        $s = Get-TcpState
+        $s = Get-TcpStateBg
         Set-Tb $ui.tAuto $s.AutoTuning; Set-Tb $ui.tHeur $s.Heuristics; Set-Tb $ui.tEcn $s.Ecn
         Set-Tb $ui.tTs $s.Timestamps; Set-Tb $ui.tRss $s.Rss; Set-Tb $ui.tRsc $s.Rsc
         $ui.txtTcpStatus.Text = $(if (Get-NetBaseline) { 'Baseline saved. Windows default restores your original settings.' } else { 'No baseline yet. It is saved automatically right before the first change.' })
@@ -3383,6 +3961,7 @@ function Set-NetBusy {
     param([bool]$Busy)
     $script:NetBusy = $Busy
     foreach ($b in 'btnNetTest', 'btnTcpGaming', 'btnTcpThroughput', 'btnTcpDefault', 'btnMtu', 'btnDns') { $script:UI[$b].IsEnabled = -not $Busy }
+    $script:UI.navPanel.IsEnabled = -not $Busy
     Set-Spinner $Busy
 }
 
@@ -3397,8 +3976,9 @@ function Start-NetTest {
     if ($script:NetBusy) { return }
     $ui = $script:UI
     Set-NetBusy $true
+    Start-Forever $ui.btnNetTest ([Windows.UIElement]::OpacityProperty) 1 0.55 0.5 $true
     try {
-        $info = Get-NetPrimary
+        $info = Get-NetPrimaryBg
         if (-not $info) { Set-Tb $ui.hGw 'No active connection' 'Warn'; return }
         foreach ($n in 'hGw', 'hWan', 'hLoss', 'hJit', 'hDns') { Set-Tb $ui[$n] 'testing...' 'Dim' }
         Invoke-UiPump
@@ -3409,11 +3989,11 @@ function Start-NetTest {
         $loss = [math]::Round(100.0 * $w.Lost / [math]::Max(1, $w.Sent), 1)
         Set-Tb $ui.hLoss "$loss%" $(if ($loss -eq 0) { 'Good' } elseif ($loss -lt 3) { 'Warn' } else { 'Bad' })
         Set-Tb $ui.hJit "$($w.Jitter) ms" $(if ($w.Jitter -le 3) { 'Good' } elseif ($w.Jitter -le 10) { 'Warn' } else { 'Bad' })
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        try { [void](Resolve-DnsName -Name 'www.google.com' -Type A -DnsOnly -NoHostsFile -QuickTimeout -ErrorAction Stop); $ms = [math]::Round($sw.Elapsed.TotalMilliseconds, 0); Set-Tb $ui.hDns "$ms ms" $(if ($ms -le 60) { 'Good' } elseif ($ms -le 200) { 'Warn' } else { 'Bad' }) }
-        catch { Set-Tb $ui.hDns 'Lookup failed' 'Bad' }
+        $ms = @(Invoke-Blocking -Script { $sw = [System.Diagnostics.Stopwatch]::StartNew(); try { [void](Resolve-DnsName -Name 'www.google.com' -Type A -DnsOnly -NoHostsFile -QuickTimeout -ErrorAction Stop); [math]::Round($sw.Elapsed.TotalMilliseconds, 0) } catch { -1 } })[0]
+        if ($ms -lt 0) { Set-Tb $ui.hDns 'Lookup failed' 'Bad' } else { Set-Tb $ui.hDns "$ms ms" $(if ($ms -le 60) { 'Good' } elseif ($ms -le 200) { 'Warn' } else { 'Bad' }) }
         Write-Log ("Network test: router {0} ms, internet {1} ms, loss {2}%, jitter {3} ms." -f $g.Avg, $w.Avg, $loss, $w.Jitter) 'info'
-    } finally { Set-NetBusy $false }
+        foreach ($n in 'hGw', 'hWan', 'hLoss', 'hJit', 'hDns') { Start-Pop $ui[$n] 0 0.92 260 }
+    } finally { Stop-Anim $ui.btnNetTest ([Windows.UIElement]::OpacityProperty); $ui.btnNetTest.Opacity = 1; Set-NetBusy $false }
 }
 
 function Start-TcpProfile {
@@ -3432,11 +4012,14 @@ function Start-TcpProfile {
             $ui.txtTcpStatus.Text = ("Connectivity got worse after the change (loss {0}/{1} vs {2}/{3} before), so it was rolled back automatically." -f $r.Post.Lost, $r.Post.Sent, $r.Pre.Lost, $r.Pre.Sent)
             $ui.txtTcpStatus.Foreground = Get-Res 'Warn'
             Write-Log 'TCP profile rolled back: connectivity test got worse.' 'warn'
+            Show-Toast 'Rolled back: connection got worse' 'warn'
         } else {
             $ui.txtTcpStatus.Text = 'Applied: ' + ($r.Changes -join '; ')
             $ui.txtTcpStatus.Foreground = Get-Res 'Good'
             foreach ($c in $r.Changes) { Write-Log "TCP: $c" 'ok' }
+            Show-Toast 'TCP profile applied' 'ok'
         }
+        Start-Pop $ui.txtTcpStatus 0 0.96 300
     } catch {
         $ui.txtTcpStatus.Text = "Failed: $($_.Exception.Message)"
         $ui.txtTcpStatus.Foreground = Get-Res 'Bad'
@@ -3454,7 +4037,7 @@ function Start-MtuTest {
     try {
         $ui.txtMtu.Text = 'Testing...'; Invoke-UiPump
         $m = Find-PathMtu '1.1.1.1' -Pump
-        $info = Get-NetPrimary
+        $info = Get-NetPrimaryBg
         if (-not $m) { Set-Tb $ui.txtMtu 'Could not test. The path blocks ping or you are offline.' 'Warn'; return }
         $cur = if ($info) { $info.Mtu } else { 0 }
         if ($m -ge 1500 -or $m -ge $cur) { Set-Tb $ui.txtMtu "Detected path MTU: $m. No change recommended." 'Good' }
@@ -3469,11 +4052,11 @@ function Start-DnsTest {
     Set-NetBusy $true
     try {
         $ui.txtDns.Text = 'Testing...'; Invoke-UiPump
-        $info = Get-NetPrimary
+        $info = Get-NetPrimaryBg
         $servers = @()
         if ($info -and @($info.Dns).Count -gt 0) { $servers += $info.Dns[0] } elseif ($info) { $servers += $info.Gateway }
         $servers += '1.1.1.1', '8.8.8.8', '9.9.9.9'
-        $rows = @(Test-DnsServers $servers -Pump)
+        $rows = @(Invoke-Blocking -Functions 'Test-DnsServers' -ArgList @(,$servers) -Script { param($s) Test-DnsServers $s })
         $lines = foreach ($r in $rows) {
             $label = if ($info -and $r.Server -eq $servers[0]) { "$($r.Server) (yours)" } else { $r.Server }
             $val = if ($r.Avg -lt 0) { 'failed' } else { "$($r.Avg) ms" }
@@ -3499,7 +4082,7 @@ function Invoke-RevertAll {
         catch { $fail++; Write-Log "FAILED to revert $($t.Name): $($_.Exception.Message)" 'err' }
         Invoke-UiPump
     }
-    try { $b = Get-NetBaseline; if ($b) { Set-TcpState $b; Write-Log 'TCP settings restored to your baseline.' 'accent' } } catch { Write-Log "TCP restore failed: $($_.Exception.Message)" 'err' }
+    try { $b = Get-NetBaseline; if ($b) { Set-TcpStateBg $b; Write-Log 'TCP settings restored to your baseline.' 'accent' } } catch { Write-Log "TCP restore failed: $($_.Exception.Message)" 'err' }
     if ($explorer) { Restart-ExplorerShell }
     Update-AllCards
     $ui.txtRestoreStatus.Text = "Reverted $ok tweak(s), $fail failed."
@@ -3513,6 +4096,7 @@ function Invoke-ExportProfile {
     $script:UI.txtRestoreStatus.Text = "Profile saved to $path"
     $script:UI.txtRestoreStatus.Foreground = Get-Res 'Good'
     Write-Log "Profile exported to $path" 'ok'
+    Show-Toast 'Profile saved to your desktop' 'ok'
 }
 
 function Invoke-ImportProfile {
@@ -3538,8 +4122,11 @@ function Register-ExtraEvents {
     $filters = @{ fAll = 'All'; fSafe = 'Safe'; fTest = 'Test'; fAdv = 'Advanced'; fOpt = 'Optional' }
     foreach ($n in $filters.Keys) {
         $ui[$n].Tag = $filters[$n]
-        $ui[$n].Add_Checked({ param($s, $e) $script:OptFilter = [string]$s.Tag; Update-OptFilter })
+        $ui[$n].Add_Checked({ param($s, $e) $script:OptFilter = [string]$s.Tag; Start-Pop $s 0 0.85 260; Update-OptFilter })
     }
+    $ui.txtSearch.Add_GotKeyboardFocus({ if ($script:AnimOn) { $script:UI.txtSearch.BeginAnimation([Windows.FrameworkElement]::WidthProperty, (New-DAnim $script:UI.txtSearch.ActualWidth 300 220 0 (New-Ease 'Cubic' 'EaseOut'))) } })
+    $ui.txtSearch.Add_LostKeyboardFocus({ if ($script:AnimOn) { $script:UI.txtSearch.BeginAnimation([Windows.FrameworkElement]::WidthProperty, (New-DAnim $script:UI.txtSearch.ActualWidth 210 240 0 (New-Ease 'Cubic' 'EaseOut'))) } })
+    foreach ($n in 'dCard1', 'dCard2', 'dCard3', 'dOptCard') { Add-CardLift $ui[$n] }
     $ui.txtSearch.Add_TextChanged({ $script:OptSearch = $script:UI.txtSearch.Text.Trim(); Update-OptFilter })
 
     $ui.btnNetTest.Add_Click({ Invoke-Safe { Start-NetTest } 'Network test' })
@@ -3599,6 +4186,7 @@ function Set-Busy {
     param([bool]$Busy, [string[]]$Buttons)
     foreach ($n in $Buttons) { $script:UI[$n].IsEnabled = -not $Busy }
     $script:UI.Win.Cursor = if ($Busy) { [Windows.Input.Cursors]::Wait } else { $null }
+    $script:UI.navPanel.IsEnabled = -not $Busy
     Set-Spinner $Busy
 }
 
@@ -3624,6 +4212,7 @@ function Start-PageIn {
     Start-FadeSlide $el 0 12 0 260
     Start-FadeSlide $ui.pageTitle 0 8 0 300
     Start-FadeSlide $ui.pageSub 70 6 0 300
+    Set-HeaderBar
     switch ($Key) {
         'dash' {
             $i = 0
@@ -3668,6 +4257,8 @@ function Update-Side {
     if ($script:Session.Active) {
         $ui.sideDot.Fill = Get-Res 'Good'
         Start-Forever $ui.sideDot ([Windows.UIElement]::OpacityProperty) 1 0.3 0.9 $true
+        Set-SessionRing $true
+        if ($ui.sideTitle.Text -ne 'Session active') { Start-Pop $ui.sideTitle 0 0.9 260 }
         $ui.sideTitle.Text = 'Session active'
         $bits = @()
         if ($script:Session.Timer) { $bits += 'timer held' }
@@ -3679,6 +4270,8 @@ function Update-Side {
         $ui.sideDot.Fill = Get-Res 'Dim'
         Stop-Anim $ui.sideDot ([Windows.UIElement]::OpacityProperty)
         $ui.sideDot.Opacity = 1
+        Set-SessionRing $false
+        if ($ui.sideTitle.Text -ne 'No active session') { Start-Pop $ui.sideTitle 0 0.9 260 }
         $ui.sideTitle.Text = 'No active session'
         $n = $script:Journal.Count
         $ui.sideSub.Text = if ($n -gt 0) { "$n tweak(s) applied by this app" } else { 'No tweaks applied yet' }
@@ -3722,11 +4315,14 @@ function Update-Dashboard {
     Update-DashStats
     Update-Side
     if ($KeepFindings -and $script:FindingsDone) { return }
+    if ($script:DeferFindings -or $script:FindingsBusy) { return }
+    $script:FindingsBusy = $true
     $ui.pnlFindings.Children.Clear()
     [void]$ui.pnlFindings.Children.Add((New-Tb 'Scanning this PC...' 12.5 'Muted'))
     Invoke-UiPump
     $items = @()
-    try { $items = Get-Findings } catch { Write-Log "Scan failed: $($_.Exception.Message)" 'err' }
+    try { $items = @(Invoke-Blocking -Functions 'Get-Findings', 'Format-Bytes', 'Get-ActivePlan', 'Invoke-NativeOut' -ArgList @($script:Facts, $script:NativeOk) -Script { param($f, $n) Get-Findings -F $f -NativeOk $n }) } catch { Write-Log "Scan failed: $($_.Exception.Message)" 'err' }
+    $script:FindingsBusy = $false
     $ui.pnlFindings.Children.Clear()
     $order = @{ warn = 0; info = 1; ok = 2 }
     foreach ($f in ($items | Sort-Object { $order[$_.Level] })) {
@@ -3737,6 +4333,7 @@ function Update-Dashboard {
         $row.CornerRadius = New-Object Windows.CornerRadius 10
         $row.Padding = '14,11'
         $row.Margin = '0,0,0,8'
+        Add-CardHover $row
         $g = New-Object Windows.Controls.Grid
         $c0 = New-Object Windows.Controls.ColumnDefinition; $c0.Width = 'Auto'
         $c1 = New-Object Windows.Controls.ColumnDefinition; $c1.Width = '*'
@@ -3744,6 +4341,7 @@ function Update-Dashboard {
         $dot = New-Object Windows.Shapes.Ellipse
         $dot.Width = 9; $dot.Height = 9; $dot.Margin = '0,5,14,0'; $dot.VerticalAlignment = 'Top'
         $dot.Fill = switch ($f.Level) { 'warn' { Get-Res 'Accent' } 'ok' { Get-Res 'Good' } default { Get-Res 'Dim' } }
+        if ($f.Level -eq 'warn') { Start-Forever $dot ([Windows.UIElement]::OpacityProperty) 1 0.35 0.9 $true }
         $sp = New-Object Windows.Controls.StackPanel
         [void]$sp.Children.Add((New-Tb $f.Title 13 'Text' $true))
         $d = New-Tb $f.Detail 12 'Muted'; $d.Margin = '0,3,0,0'
@@ -3754,6 +4352,7 @@ function Update-Dashboard {
         [void]$ui.pnlFindings.Children.Add($row)
     }
     $script:FindingsDone = $true
+    Start-Stagger $ui.pnlFindings 12 40 0 10
 }
 
 # ---- optimize page ------------------------------------------------------------
@@ -3861,7 +4460,7 @@ function Update-Card {
 }
 
 function Update-AllCards {
-    foreach ($id in @($script:Cards.Keys)) { Update-Card $id }
+    foreach ($id in @($script:Cards.Keys)) { Update-Card $id; Invoke-UiPump }
     Update-DashStats
     Update-Side
 }
@@ -3877,7 +4476,12 @@ function Build-OptPage {
         $h.Margin = '2,14,0,8'
         $h.Tag = 'hdr'
         [void]$ui.pnlTweaks.Children.Add($h)
-        foreach ($t in $mine) { [void]$ui.pnlTweaks.Children.Add((New-TweakCard $t)) }
+        foreach ($t in $mine) {
+            [void]$ui.pnlTweaks.Children.Add((New-TweakCard $t))
+            $script:BuildN = [int]$script:BuildN + 1
+            if ($script:UI.landing.Visibility -eq 'Visible') { Set-EnterContent ("Scanning tweaks {0}/{1}" -f $script:BuildN, @($script:Tweaks).Count) $false }
+            Invoke-UiPump
+        }
     }
     $script:OptBuilt = $true
     Update-AllCards
@@ -3905,7 +4509,7 @@ function Invoke-OptRun {
     try {
         if ($Apply -and $ui.chkRestore.IsChecked) {
             Write-Log 'Creating a restore point...' 'info'; Invoke-UiPump
-            try { New-RestorePoint; Write-Log 'Restore point created.' 'ok' }
+            try { New-RestorePointAsync; Write-Log 'Restore point created.' 'ok' }
             catch { Write-Log "No restore point made: $($_.Exception.Message)" 'warn' }
         }
         foreach ($t in $sel) {
@@ -3930,8 +4534,10 @@ function Invoke-OptRun {
             $ui.bannerRebootText.Text = 'Restart Windows to finish: ' + ($reboot -join ', ') + '.'
             $ui.bannerReboot.Visibility = 'Visible'
             Start-FadeSlide $ui.bannerReboot 0 -12 0 320
+            Start-Forever $ui.bannerReboot ([Windows.UIElement]::OpacityProperty) 1 0.65 1.1 $true 'Sine' 600
         }
         Write-Log ("{0} done: {1} succeeded, {2} failed." -f $(if ($Apply) { 'Apply' } else { 'Revert' }), $ok, $fail) $(if ($fail -gt 0) { 'warn' } else { 'ok' })
+        Show-Toast ("{0} {1} tweak(s){2}" -f $(if ($Apply) { 'Applied' } else { 'Reverted' }), $ok, $(if ($fail -gt 0) { ", $fail failed" } else { '' })) $(if ($fail -gt 0) { 'warn' } else { 'ok' })
     } finally {
         Set-Busy $false $btns
         Update-DashStats
@@ -3978,7 +4584,7 @@ function Invoke-Preset {
 # ---- game session page --------------------------------------------------------
 function Get-SessionOptions {
     $ui = $script:UI
-    return @{ Timer = [bool]$ui.sesTimer.IsChecked; Purge = [bool]$ui.sesPurge.IsChecked; Priority = [bool]$ui.sesPrio.IsChecked; Services = [bool]$ui.sesSvc.IsChecked }
+    return @{ Timer = [bool]$ui.sesTimer.IsChecked; Purge = [bool]$ui.sesPurge.IsChecked; Priority = [bool]$ui.sesPrio.IsChecked; Services = [bool]$ui.sesSvc.IsChecked; Pin = ([bool]$ui.sesPin.IsChecked -and [bool]$script:Facts.DualCcdX3D) }
 }
 
 function Update-SessionUi {
@@ -3992,7 +4598,7 @@ function Update-SessionUi {
         $ui.txtSesStatus.Text = if ($ui.sesAuto.IsChecked) { 'Waiting for Rust to start...' } else { 'No session running.' }
         $ui.txtSesStatus.Foreground = Get-Res 'Muted'
     }
-    foreach ($n in 'sesTimer', 'sesPurge', 'sesPrio', 'sesSvc') { $ui[$n].IsEnabled = -not $script:Session.Active }
+    foreach ($n in 'sesTimer', 'sesPurge', 'sesPrio', 'sesPin', 'sesSvc') { $ui[$n].IsEnabled = -not $script:Session.Active }
     Update-Side
 }
 
@@ -4016,6 +4622,7 @@ function Invoke-SessionTick {
             try { if ($rust.PriorityClass -notin 'AboveNormal', 'High', 'RealTime') { $rust.PriorityClass = 'AboveNormal'; Write-Log "$($rust.ProcessName) priority set to Above Normal." 'ok' } }
             catch { Write-Log "Could not change Rust priority: $($_.Exception.Message)" 'warn' }
         }
+        if ($script:Session.Pin -and $rust) { Set-VCacheAffinity $rust }
         $script:Session.Tick = [int]$script:Session.Tick + 1
         if ($script:Session.Purge -and ($script:Session.Tick % 6) -eq 0) {
             $m = Get-MemSnapshot
@@ -4091,6 +4698,7 @@ function Start-CleanJob {
     foreach ($b in 'btnScan', 'btnCleanRun', 'btnCleanRec', 'btnCleanNone') { $ui[$b].IsEnabled = $false }
     $ui.barClean.Value = 0
     Set-Spinner $true
+    Start-Forever $ui.barClean ([Windows.UIElement]::OpacityProperty) 1 0.55 0.8 $true
     $ui.txtCleanTotal.Text = ''
     $ui.txtCleanStatus.Text = if ($Delete) { 'Cleaning...' } else { 'Scanning...' }
     Invoke-Async -Work $script:CleanWork -ArgList @($tasks, $Delete) -OnProgress {
@@ -4101,6 +4709,7 @@ function Start-CleanJob {
             'tick'  { $script:CleanLbl[$it.Id].Text = (Format-Bytes $it.Bytes) }
             'done'  {
                 $script:CleanLbl[$it.Id].Text = if ($it.Text) { $it.Text } else { Format-Bytes $it.Bytes }
+                Start-Pop $script:CleanLbl[$it.Id] 0 0.85 240
                 $ctx.Done++
                 $script:UI.barClean.Value = [math]::Round(100 * $ctx.Done / [math]::Max(1, $ctx.Count))
             }
@@ -4113,11 +4722,13 @@ function Start-CleanJob {
         foreach ($b in 'btnScan', 'btnCleanRun', 'btnCleanRec', 'btnCleanNone') { $ui[$b].IsEnabled = $true }
         $ui.barClean.Value = 100
         Set-Spinner $false
+        Stop-Anim $ui.barClean ([Windows.UIElement]::OpacityProperty); $ui.barClean.Opacity = 1
         if ($err) { $ui.txtCleanStatus.Text = "Failed: $err"; Write-Log "Cleaner failed: $err" 'err'; return }
         if ($ctx.Delete) {
             $ui.txtCleanStatus.Text = 'Cleanup finished.'
             $ui.txtCleanTotal.Text = 'Freed ' + (Format-Bytes $ctx.Freed)
             Write-Log ("Cleaner freed {0}." -f (Format-Bytes $ctx.Freed)) 'ok'
+            Show-Toast ("Freed {0}" -f (Format-Bytes $ctx.Freed)) 'ok'
         } else {
             $ui.txtCleanStatus.Text = 'Scan complete.'
             $ui.txtCleanTotal.Text = (Format-Bytes $ctx.Freed) + ' reclaimable'
@@ -4147,15 +4758,22 @@ function Start-AppEntrance {
     foreach ($n in @($ui.navPanel.Children)) { Start-FadeSlide $n (140 + $i * 55) 0 -18 380; $i++ }
     Start-Pop $ui.sideLogo 120 0.5 450
     Start-FadeSlide $ui.swMotion 520 0 0 320
+    Move-NavHighlight $ui.navDash -Instant
     Set-Ambient
     Start-PageIn 'dash'
+    $script:DeferFindings = $false
+    $script:FindingsDone = $false
+    Invoke-Safe { Update-Dashboard } 'Dashboard scan'
 }
 
 function Enter-App {
     $ui = $script:UI
+    if (-not $script:Ready) { return }
     $ui.btnEnter.IsEnabled = $false
-    $ui.btnEnter.Content = 'Scanning your PC...'
+    Set-EnterContent 'Scanning your PC...' $false
     Invoke-UiPump
+    $script:DeferFindings = $true
+    $script:BuildN = 0
     try {
         Build-OptPage
         Build-KillList
@@ -4167,6 +4785,8 @@ function Enter-App {
         Stop-Particles
         $ui.landing.Visibility = 'Collapsed'; $ui.app.Visibility = 'Visible'; $ui.app.Opacity = 1
         Start-PageIn 'dash'
+        $script:DeferFindings = $false; $script:FindingsDone = $false
+        Invoke-Safe { Update-Dashboard } 'Dashboard scan'
         return
     }
     $ui.hero.RenderTransformOrigin = New-Object Windows.Point -ArgumentList 0.5, 0.5
@@ -4189,14 +4809,17 @@ function Start-LandingAnimations {
     $letters = @($ui.lnTitle.Children)
     if (-not $script:AnimOn) {
         $ui.Win.Opacity = 1
-        $ui.logoScale.ScaleX = 1; $ui.logoScale.ScaleY = 1
+        $ui.logoScale.ScaleX = 1; $ui.logoScale.ScaleY = 1; $ui.lnUnder.Width = 120
         foreach ($el in @($ui.logoWrap, $ui.lnTag, $ui.lnSub, $ui.lnLine, $ui.btnEnter, $ui.chipA, $ui.chipB, $ui.chipC, $ui.lnSys, $ui.lnChrome) + $letters) { Start-FadeSlide $el 0 0 0 1 }
         return
     }
     $op = [Windows.UIElement]::OpacityProperty
     $out = New-Ease 'Quad' 'EaseOut'
     # window open: fade + settle
-    $ui.Win.BeginAnimation($op, (New-DAnim 0 1 450 0 $out))
+    $wa = New-DAnim 0 1 450 0 $out
+    $wa.FillBehavior = 'Stop'
+    $wa.Add_Completed({ $script:UI.Win.Opacity = 1 })
+    $ui.Win.BeginAnimation($op, $wa)
     $ui.frame.RenderTransformOrigin = New-Object Windows.Point -ArgumentList 0.5, 0.5
     $fs = New-Object Windows.Media.ScaleTransform
     $fs.ScaleX = 0.965; $fs.ScaleY = 0.965
@@ -4256,6 +4879,7 @@ function Start-LandingAnimations {
     Start-FadeSlide $ui.lnSys 2500 0 0 600
     Start-FadeSlide $ui.lnChrome 600 0 0 500
     Start-Particles
+    Start-LandingAmbient
 }
 
 function Register-Events {
@@ -4270,20 +4894,34 @@ function Register-Events {
         $tb.FontFamily = 'Bahnschrift, Segoe UI Semibold'
         $tb.FontSize = 64
         $tb.FontWeight = 'SemiBold'
-        $tb.Foreground = Get-Res 'Text'
+        $tb.Foreground = New-Object Windows.Media.SolidColorBrush -ArgumentList (Get-Color '#E8EBEF')
+        $tb.Background = [Windows.Media.Brushes]::Transparent
         $tb.Margin = '0,0,5,0'
         $tb.Opacity = 0
+        $tb.Add_MouseEnter({ param($s, $e)
+            if (-not $script:AnimOn) { return }
+            if ($s.RenderTransform -is [Windows.Media.TranslateTransform]) { $s.RenderTransform.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, (New-DAnim $s.RenderTransform.Y -10 150 0 (New-Ease))) }
+            $ca = New-Object Windows.Media.Animation.ColorAnimation
+            $ca.To = Get-Color '#F58A55'; $ca.Duration = Get-Dur 150
+            $s.Foreground.BeginAnimation([Windows.Media.SolidColorBrush]::ColorProperty, $ca)
+        })
+        $tb.Add_MouseLeave({ param($s, $e)
+            if (-not $script:AnimOn) { return }
+            if ($s.RenderTransform -is [Windows.Media.TranslateTransform]) { $s.RenderTransform.BeginAnimation([Windows.Media.TranslateTransform]::YProperty, (New-DAnim $s.RenderTransform.Y 0 240 0 (New-Ease))) }
+            $ca = New-Object Windows.Media.Animation.ColorAnimation
+            $ca.To = Get-Color '#E8EBEF'; $ca.Duration = Get-Dur 260
+            $s.Foreground.BeginAnimation([Windows.Media.SolidColorBrush]::ColorProperty, $ca)
+        })
         [void]$ui.lnTitle.Children.Add($tb)
     }
     $ui.lnSub.Text   = Space-Text 'OPTIMIZER'
-    $ui.btnEnter.Content = ('ENTER OPTIMIZER   ' + [char]0x2192)
-    $dot = [string][char]0x00B7
-    $ui.lnSys.Text = ("{0}   {1}   {2} GB RAM   {1}   v{3}" -f $script:Facts.CpuName, $dot, $script:Facts.RamGB, $script:Version)
+    Set-EnterContent 'Preparing...' $false
+    $ui.btnEnter.IsEnabled = $false
 
     # window chrome and dragging
-    $drag = { param($s, $e) if ($e.ChangedButton -eq 'Left') { try { $script:UI.Win.DragMove() } catch { } } }
-    $ui.landing.Add_MouseLeftButtonDown($drag)
-    $ui.header.Add_MouseLeftButtonDown($drag)
+    $ui.landing.Add_MouseLeftButtonDown({ param($s, $e) if ($e.ChangedButton -eq 'Left') { Start-Ripple ($e.GetPosition($script:UI.landing)); Invoke-WindowDrag } })
+    $ui.landing.Add_MouseMove({ param($s, $e) Invoke-Parallax ($e.GetPosition($script:UI.landing)) })
+    $ui.header.Add_MouseLeftButtonDown({ param($s, $e) if ($e.ChangedButton -eq 'Left') { Invoke-WindowDrag } })
     $ui.lnMin.Add_Click({ $script:UI.Win.WindowState = 'Minimized' })
     $ui.appMin.Add_Click({ $script:UI.Win.WindowState = 'Minimized' })
     $ui.lnClose.Add_Click({ $script:UI.Win.Close() })
@@ -4294,7 +4932,7 @@ function Register-Events {
     $navs = @{ navDash = 'dash'; navOpt = 'opt'; navInternet = 'internet'; navRestore = 'restore'; navDebloat = 'debloat'; navStartup = 'startup'; navRust = 'rust'; navSession = 'session'; navClean = 'clean'; navLog = 'log' }
     foreach ($n in $navs.Keys) {
         $ui[$n].Tag = $navs[$n]
-        $ui[$n].Add_Checked({ param($s, $e) Invoke-Safe { Show-Page ([string]$s.Tag) } 'Navigation' })
+        $ui[$n].Add_Checked({ param($s, $e) Move-NavHighlight $s; Start-Pop $s.Content.Children[0] 0 0.6 300; Invoke-Safe { Show-Page ([string]$s.Tag) } 'Navigation' })
     }
 
     # dashboard
@@ -4377,6 +5015,8 @@ function Register-Events {
     $win.Opacity = 0
     $win.Add_Loaded({ Start-LandingAnimations })
     $win.Add_Closing({
+        param($s, $e)
+        if ($script:AnimOn -and -not $script:CloseNow) { $e.Cancel = $true; $script:CloseNow = $true; Start-CloseAnim; return }
         try { $script:SessionTimer.Stop() } catch { }
         try { Stop-GameSession } catch { }
         try { if ($script:NativeOk) { [RomNative]::ReleaseTimer() } } catch { }
@@ -4384,18 +5024,25 @@ function Register-Events {
 }
 
 # ---- start -------------------------------------------------------------------------
-Restore-OrphanedSession
-$script:Facts = Get-SystemFacts
-Import-Journal
-$script:Tweaks = Get-TweakCatalog
-$script:FindingsDone = $false
 $script:AnimOn = [bool](Get-Settings).Anim
-[void](New-AppWindow)
-Register-Events
-Register-ExtraEvents
-$script:SessionTimer = New-Object Windows.Threading.DispatcherTimer
-$script:SessionTimer.Interval = [TimeSpan]::FromSeconds(3)
-$script:SessionTimer.Add_Tick({ try { Invoke-SessionTick } catch { } })
-$script:SessionTimer.Start()
-Write-Log "Daqueece Optimizer $($script:Version) started on $($script:Facts.OsName)." 'accent'
-[void]$script:UI.Win.ShowDialog()
+try {
+    [void](New-AppWindow)
+    Register-Events
+    Register-ExtraEvents
+    $script:FindingsDone = $false
+    $script:SessionTimer = New-Object Windows.Threading.DispatcherTimer
+    $script:SessionTimer.Interval = [TimeSpan]::FromSeconds(3)
+    $script:SessionTimer.Add_Tick({ if ($script:Ready) { try { Invoke-SessionTick } catch { } } })
+    $script:SessionTimer.Start()
+    $script:UI.Win.Dispatcher.Add_UnhandledException({
+        param($s, $e)
+        try { Write-Log "Unexpected error: $($e.Exception.Message)" 'err' } catch { }
+        $e.Handled = $true
+    })
+    $script:UI.Win.Add_ContentRendered({ if (-not $script:Prepared) { $script:Prepared = $true; Start-Prepare } })
+    [void]$script:UI.Win.ShowDialog()
+} catch {
+    $msg = $_.Exception.Message
+    try { Add-Content -LiteralPath $script:LogFile -Value ("{0} [fatal] {1}`n{2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg, $_.ScriptStackTrace) } catch { }
+    [void][Windows.MessageBox]::Show("Daqueece Optimizer hit an error and could not continue:`n`n$msg`n`nDetails were saved to $($script:LogFile)", 'Daqueece Optimizer', 'OK', 'Error')
+}
